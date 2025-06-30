@@ -11,13 +11,19 @@
 """ZED camera sensor implementation using RTC subscribers for RGB and Zenoh subscriber for depth."""
 
 import logging
+import time
+from typing import Any, Dict, Optional, Union
 
 import numpy as np
 import zenoh
 
+from dexcontrol.config.sensors.cameras import ZedCameraConfig
 from dexcontrol.utils.os_utils import resolve_key_name
 from dexcontrol.utils.rtc_utils import create_rtc_subscriber_from_zenoh
-from dexcontrol.utils.subscribers.camera import DepthCameraSubscriber
+from dexcontrol.utils.subscribers.camera import (
+    DepthCameraSubscriber,
+    RGBCameraSubscriber,
+)
 from dexcontrol.utils.subscribers.rtc import RTCSubscriber
 from dexcontrol.utils.zenoh_utils import query_zenoh_json
 
@@ -34,289 +40,277 @@ except ImportError:
 
 
 class ZedCameraSensor:
-    """ZED camera sensor using RTC subscribers for RGB and Zenoh subscriber for depth.
+    """ZED camera sensor for multi-stream (RGB, Depth) data acquisition.
 
-    This sensor provides left RGB, right RGB, and depth image data from a ZED camera.
-    RGB streams use RTC subscribers for efficient data handling, while depth uses
-    regular Zenoh subscriber.
-
-    Note: For depth data decoding, dexsensor package is required.
+    This sensor manages left RGB, right RGB, and depth data streams from a ZED
+    camera. It can be configured to use high-performance RTC subscribers for RGB
+    streams (`use_rtc=True`) or fall back to standard Zenoh subscribers
+    (`use_rtc=False`). The depth stream always uses a standard Zenoh subscriber.
     """
+
+    SubscriberType = Union[RTCSubscriber, DepthCameraSubscriber, RGBCameraSubscriber]
 
     def __init__(
         self,
-        configs,
+        configs: ZedCameraConfig,
         zenoh_session: zenoh.Session,
-        *args,
-        **kwargs,
     ) -> None:
-        """Initialize the ZED camera sensor.
+        """Initialize the ZED camera sensor and its subscribers.
 
         Args:
-            configs: Configuration for the ZED camera sensor.
+            configs: Configuration object for the ZED camera.
             zenoh_session: Active Zenoh session for communication.
         """
         self._name = configs.name
         self._zenoh_session = zenoh_session
         self._configs = configs
+        self._subscribers: Dict[str, Optional[ZedCameraSensor.SubscriberType]] = {}
+        self._camera_info: Optional[Dict[str, Any]] = None
 
-        # Initialize subscribers dictionary - RGB uses RTC, depth uses Zenoh
-        self._subscribers: dict[str, RTCSubscriber | DepthCameraSubscriber | None] = {}
-
-        # Create subscribers for each enabled stream
         self._create_subscribers()
+        self._query_camera_info()
 
-    def _create_subscribers(self) -> None:
-        """Create subscribers for each enabled stream - RTC for RGB, Zenoh for depth."""
-        subscriber_config = self._configs.subscriber_config
+    def _create_subscriber(
+        self, stream_name: str, stream_config: Dict[str, Any]
+    ) -> Optional[SubscriberType]:
+        """Factory method to create a subscriber based on stream type and config."""
+        try:
+            if not stream_config.get("enable", False):
+                logger.info(f"'{self._name}': Stream '{stream_name}' is disabled.")
+                return None
 
-        # Define stream types and their configurations
-        streams = {
-            'left_rgb': subscriber_config.get('left_rgb', {}),
-            'right_rgb': subscriber_config.get('right_rgb', {}),
-            'depth': subscriber_config.get('depth', {})
-        }
+            # Create Depth subscriber
+            if stream_name == "depth":
+                topic = stream_config.get("topic")
+                if not topic:
+                    logger.warning(f"'{self._name}': No 'topic' for depth stream.")
+                    return None
+                logger.info(f"'{self._name}': Creating Zenoh depth subscriber.")
+                return DepthCameraSubscriber(
+                    topic=topic,
+                    zenoh_session=self._zenoh_session,
+                    name=f"{self._name}_{stream_name}_subscriber",
+                    enable_fps_tracking=self._configs.enable_fps_tracking,
+                    fps_log_interval=self._configs.fps_log_interval,
+                )
 
-        for stream_name, stream_config in streams.items():
-            if stream_config.get('enable', False):
-                try:
-                    if stream_name == 'depth':
-                        # Use regular Zenoh subscriber for depth
-                        topic = stream_config.get('topic')
-                        if topic:
-                            subscriber = DepthCameraSubscriber(
-                                topic=topic,
-                                zenoh_session=self._zenoh_session,
-                                name=f"{self._name}_{stream_name}_subscriber",
-                                enable_fps_tracking=self._configs.enable_fps_tracking,
-                                fps_log_interval=self._configs.fps_log_interval,
-                            )
-                            logger.info(f"Created Zenoh depth subscriber for {self._name} {stream_name}")
-                            self._subscribers[stream_name] = subscriber
-                        else:
-                            logger.warning(f"No topic found for {self._name} {stream_name}")
-                            self._subscribers[stream_name] = None
-                    else:
-                        # Use RTC subscriber for RGB streams
-                        info_key = stream_config.get('info_key')
-                        if info_key:
-                            subscriber = create_rtc_subscriber_from_zenoh(
-                                zenoh_session=self._zenoh_session,
-                                info_topic=info_key,
-                                name=f"{self._name}_{stream_name}_subscriber",
-                                enable_fps_tracking=self._configs.enable_fps_tracking,
-                                fps_log_interval=self._configs.fps_log_interval,
-                            )
-
-                            if subscriber is None:
-                                logger.warning(f"Failed to create RTC subscriber for {self._name} {stream_name}")
-                            else:
-                                logger.info(f"Created RTC subscriber for {self._name} {stream_name}")
-
-                            self._subscribers[stream_name] = subscriber
-                        else:
-                            logger.warning(f"No info_key found for {self._name} {stream_name}")
-                            self._subscribers[stream_name] = None
-                except Exception as e:
-                    logger.error(f"Error creating subscriber for {self._name} {stream_name}: {e}")
-                    self._subscribers[stream_name] = None
+            # Create RGB subscriber (RTC or Zenoh)
+            if self._configs.use_rtc:
+                info_key = stream_config.get("info_key")
+                if not info_key:
+                    logger.warning(f"'{self._name}': No 'info_key' for RTC stream '{stream_name}'.")
+                    return None
+                logger.info(f"'{self._name}': Creating RTC subscriber for '{stream_name}'.")
+                return create_rtc_subscriber_from_zenoh(
+                    zenoh_session=self._zenoh_session,
+                    info_topic=info_key,
+                    name=f"{self._name}_{stream_name}_subscriber",
+                    enable_fps_tracking=self._configs.enable_fps_tracking,
+                    fps_log_interval=self._configs.fps_log_interval,
+                )
             else:
-                logger.info(f"Stream {stream_name} disabled for {self._name}")
-                self._subscribers[stream_name] = None
+                topic = stream_config.get("topic")
+                if not topic:
+                    logger.warning(f"'{self._name}': No 'topic' for Zenoh stream '{stream_name}'.")
+                    return None
+                logger.info(f"'{self._name}': Creating Zenoh RGB subscriber for '{stream_name}'.")
+                return RGBCameraSubscriber(
+                    topic=topic,
+                    zenoh_session=self._zenoh_session,
+                    name=f"{self._name}_{stream_name}_subscriber",
+                    enable_fps_tracking=self._configs.enable_fps_tracking,
+                    fps_log_interval=self._configs.fps_log_interval,
+                )
 
-        # Query for camera info - use info_key from one of the RGB streams
-        enabled_rgb_configs = [config for config in [subscriber_config.get('left_rgb'), subscriber_config.get('right_rgb')] if config and config.get('enable')]
-        if enabled_rgb_configs:
-            info_key = resolve_key_name(enabled_rgb_configs[0].get('info_key')).rstrip('/')
-            info_key_root = '/'.join(info_key.split('/')[:-2])
-            info_key = f"{info_key_root}/info"
-            info = query_zenoh_json(self._zenoh_session, info_key)
-            self._camera_info = info
-            if info is not None:
-                self._depth_min = info.get('depth_min')
-                self._depth_max = info.get('depth_max')
-            else:
-                logger.warning(f"No camera info found for {self._name}")
-                self._depth_min = None
-                self._depth_max = None
-        else:
-            logger.warning(f"No enabled RGB streams found for camera info query for {self._name}")
-            self._camera_info = None
-            self._depth_min = None
-            self._depth_max = None
-
-    def _decode_depth_data(self, encoded_depth_data: bytes | None) -> np.ndarray | None:
-        """Decode depth data from encoded bytes to actual depth values.
-
-        Args:
-            encoded_depth_data: Raw depth data as bytes.
-
-        Returns:
-            Decoded depth data as numpy array (HxW).
-
-        Raises:
-            RuntimeError: If dexsensor is not available for depth decoding.
-        """
-        if encoded_depth_data is None:
+        except Exception as e:
+            logger.error(f"Error creating subscriber for '{self._name}/{stream_name}': {e}")
             return None
 
-        if not DEXSENSOR_AVAILABLE or decode_depth is None:
-            raise RuntimeError(
-                f"dexsensor is required for depth decoding in {self._name}. "
-                "Please install dexsensor: pip install dexsensor"
-            )
+    def _create_subscribers(self) -> None:
+        """Create subscribers for all configured camera streams."""
+        subscriber_config = self._configs.subscriber_config
+        stream_definitions = {
+            "left_rgb": subscriber_config.get("left_rgb", {}),
+            "right_rgb": subscriber_config.get("right_rgb", {}),
+            "depth": subscriber_config.get("depth", {}),
+        }
+
+        for name, config in stream_definitions.items():
+            self._subscribers[name] = self._create_subscriber(name, config)
+
+    def _query_camera_info(self) -> None:
+        """Query Zenoh for camera metadata if using RTC."""
+        if not self._configs.use_rtc:
+            logger.info(f"'{self._name}': Skipping camera info query in non-RTC mode.")
+            return
+
+        enabled_rgb_streams = [
+            s
+            for s_name, s in self._subscribers.items()
+            if "rgb" in s_name and s is not None
+        ]
+
+        if not enabled_rgb_streams:
+            logger.warning(f"'{self._name}': No enabled RGB streams to query for camera info.")
+            return
+
+        # Use the info_key from the first available RGB subscriber's config
+        first_stream_name = "left_rgb" if self._subscribers.get("left_rgb") else "right_rgb"
+        stream_config = self._configs.subscriber_config.get(first_stream_name, {})
+        info_key = stream_config.get("info_key")
+
+        if not info_key:
+            logger.warning(f"'{self._name}': Could not find info_key for camera info query.")
+            return
 
         try:
-            # Decode the depth data from bytes - this returns (depth, depth_min, depth_max)
-            depth_decoded = decode_depth(encoded_depth_data)
-            return depth_decoded
+            # Construct the root info key (e.g., 'camera/head/info')
+            resolved_key = resolve_key_name(info_key).rstrip("/")
+            info_key_root = "/".join(resolved_key.split("/")[:-2])
+            final_info_key = f"{info_key_root}/info"
+
+            logger.info(f"'{self._name}': Querying for camera info at '{final_info_key}'.")
+            self._camera_info = query_zenoh_json(self._zenoh_session, final_info_key)
+
+            if self._camera_info:
+                logger.info(f"'{self._name}': Successfully received camera info.")
+            else:
+                logger.warning(f"'{self._name}': No camera info found at '{final_info_key}'.")
         except Exception as e:
-            raise RuntimeError(f"Failed to decode depth data for {self._name}: {e}")
+            logger.error(f"'{self._name}': Failed to query camera info: {e}")
 
     def shutdown(self) -> None:
-        """Shutdown the camera sensor."""
+        """Shutdown all active subscribers for the camera sensor."""
+        logger.info(f"Shutting down all subscribers for '{self._name}'.")
         for stream_name, subscriber in self._subscribers.items():
             if subscriber:
                 try:
                     subscriber.shutdown()
-                    logger.info(f"Shut down {stream_name} subscriber for {self._name}")
+                    logger.debug(f"'{self._name}': Subscriber '{stream_name}' shut down.")
                 except Exception as e:
-                    logger.error(f"Error shutting down {stream_name} subscriber for {self._name}: {e}")
+                    logger.error(
+                        f"Error shutting down '{stream_name}' subscriber for '{self._name}': {e}"
+                    )
+        logger.info(f"'{self._name}' sensor shut down.")
 
     def is_active(self) -> bool:
-        """Check if any camera stream is actively receiving data.
+        """Check if any of the camera's subscribers are actively receiving data.
 
         Returns:
-            True if at least one stream is receiving data, False otherwise.
+            True if at least one subscriber is active, False otherwise.
         """
-        for subscriber in self._subscribers.values():
-            if subscriber and subscriber.is_active():
-                return True
-        return False
+        return any(
+            sub.is_active() for sub in self._subscribers.values() if sub is not None
+        )
 
     def is_stream_active(self, stream_name: str) -> bool:
-        """Check if a specific stream is actively receiving data.
+        """Check if a specific camera stream is actively receiving data.
 
         Args:
-            stream_name: Name of the stream ('left_rgb', 'right_rgb', 'depth').
+            stream_name: The name of the stream (e.g., 'left_rgb', 'depth').
 
         Returns:
-            True if the stream is receiving data, False otherwise.
+            True if the specified stream's subscriber is active, False otherwise.
         """
         subscriber = self._subscribers.get(stream_name)
         return subscriber.is_active() if subscriber else False
 
     def wait_for_active(self, timeout: float = 5.0, require_all: bool = False) -> bool:
-        """Wait for camera streams to start receiving data.
+        """Wait for camera streams to become active.
 
         Args:
-            timeout: Maximum time to wait in seconds.
-            require_all: If True, wait for all enabled streams. If False, wait for any stream.
+            timeout: Maximum time to wait in seconds for each subscriber.
+            require_all: If True, waits for all enabled streams to become active.
+                         If False, waits for at least one stream to become active.
 
         Returns:
-            True if condition is met, False if timeout is reached.
+            True if the condition is met within the timeout, False otherwise.
         """
-        active_subscribers = [sub for sub in self._subscribers.values() if sub is not None]
-
-        if not active_subscribers:
-            logger.warning(f"No active subscribers for {self._name}")
-            return False
+        enabled_subscribers = [s for s in self._subscribers.values() if s is not None]
+        if not enabled_subscribers:
+            logger.warning(f"'{self._name}': No subscribers enabled, cannot wait.")
+            return True  # No subscribers to wait for
 
         if require_all:
-            # Wait for all subscribers to become active
-            for subscriber in active_subscribers:
-                if not subscriber.wait_for_active(timeout):
+            for sub in enabled_subscribers:
+                if not sub.wait_for_active(timeout):
+                    logger.warning(f"'{self._name}': Timed out waiting for subscriber '{sub.name}'.")
                     return False
+            logger.info(f"'{self._name}': All enabled streams are active.")
             return True
         else:
-            # Wait for any subscriber to become active
-            import time
             start_time = time.time()
             while time.time() - start_time < timeout:
                 if self.is_active():
+                    logger.info(f"'{self._name}': At least one stream is active.")
                     return True
                 time.sleep(0.1)
+            logger.warning(f"'{self._name}': Timed out waiting for any stream to become active.")
             return False
 
-    def get_obs(self, obs_keys: list[str] | None = None) -> dict[str, np.ndarray]:
-        """Get the latest image data from specified streams.
+    def get_obs(
+        self, obs_keys: Optional[list[str]] = None
+    ) -> Dict[str, Optional[np.ndarray]]:
+        """Get the latest observation data from specified camera streams.
 
         Args:
-            obs_keys: List of stream names to get data from.
-                     If None, gets data from all enabled streams.
+            obs_keys: A list of stream names to retrieve data from (e.g.,
+                      ['left_rgb', 'depth']). If None, retrieves data from all
+                      enabled streams.
 
         Returns:
-            Dictionary mapping stream names to image arrays (HxWxC for RGB, HxW for depth)
-            if available, None otherwise.
-
-        Raises:
-            RuntimeError: If depth data is requested but dexsensor is not available.
+            A dictionary mapping stream names to their latest image data. The
+            image is a numpy array (HxWxC for RGB, HxW for depth) or None if
+            no data is available for that stream.
         """
-        if obs_keys is None:
-            obs_keys = list(self._subscribers.keys())
-
+        keys_to_fetch = obs_keys or self.available_streams
         obs_out = {}
-        for key in obs_keys:
-            if key in self._subscribers:
-                subscriber = self._subscribers[key]
-                if subscriber:
-                    raw_data = subscriber.get_latest_data()
-                    obs_out[key] = raw_data
-                else:
-                    obs_out[key] = None
-            else:
-                logger.warning(f"Unknown stream key: {key} for {self._name}")
-
+        for key in keys_to_fetch:
+            subscriber = self._subscribers.get(key)
+            obs_out[key] = subscriber.get_latest_data() if subscriber else None
         return obs_out
 
-    def get_left_rgb(self) -> np.ndarray | None:
-        """Get the latest left RGB image.
+    def get_left_rgb(self) -> Optional[np.ndarray]:
+        """Get the latest image from the left RGB stream.
 
         Returns:
-            Latest left RGB image as numpy array (HxWxC) if available, None otherwise.
+            The latest left RGB image as a numpy array, or None if not available.
         """
-        subscriber = self._subscribers.get('left_rgb')
+        subscriber = self._subscribers.get("left_rgb")
         return subscriber.get_latest_data() if subscriber else None
 
-    def get_right_rgb(self) -> np.ndarray | None:
-        """Get the latest right RGB image.
+    def get_right_rgb(self) -> Optional[np.ndarray]:
+        """Get the latest image from the right RGB stream.
 
         Returns:
-            Latest right RGB image as numpy array (HxWxC) if available, None otherwise.
+            The latest right RGB image as a numpy array, or None if not available.
         """
-        subscriber = self._subscribers.get('right_rgb')
+        subscriber = self._subscribers.get("right_rgb")
         return subscriber.get_latest_data() if subscriber else None
 
-    def get_depth(self) -> np.ndarray | None:
-        """Get the latest depth image.
+    def get_depth(self) -> Optional[np.ndarray]:
+        """Get the latest image from the depth stream.
+
+        The depth data is returned as a numpy array with values in meters.
 
         Returns:
-            Latest depth image as numpy array (HxW) if available, None otherwise.
-
-        Raises:
-            RuntimeError: If dexsensor is not available for depth decoding.
+            The latest depth image as a numpy array, or None if not available.
         """
-        subscriber = self._subscribers.get('depth')
-        if not subscriber:
-            return None
-
-        # DepthCameraSubscriber already handles decoding
-        return subscriber.get_latest_data()
+        subscriber = self._subscribers.get("depth")
+        return subscriber.get_latest_data() if subscriber else None
 
     @property
-    def fps(self) -> dict[str, float]:
-        """Get the current FPS measurement for each stream.
+    def fps(self) -> Dict[str, float]:
+        """Get the current FPS measurement for each active stream.
 
         Returns:
-            Dictionary mapping stream names to their FPS measurements.
+            A dictionary mapping stream names to their FPS measurements.
         """
-        fps_dict = {}
-        for stream_name, subscriber in self._subscribers.items():
-            if subscriber:
-                fps_dict[stream_name] = subscriber.fps
-            else:
-                fps_dict[stream_name] = 0.0
-        return fps_dict
+        return {
+            name: sub.fps
+            for name, sub in self._subscribers.items()
+            if sub is not None
+        }
 
     @property
     def name(self) -> str:

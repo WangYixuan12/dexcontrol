@@ -84,16 +84,9 @@ class RPLidarSensor:
         Returns:
             Latest scan data dictionary if available, None otherwise.
             Dictionary contains:
-                - ranges: Array of range measurements
-                - angles: Array of corresponding angles
-                - intensities: Array of intensity values (if available)
-                - angle_min: Minimum angle of the scan
-                - angle_max: Maximum angle of the scan
-                - angle_increment: Angular distance between measurements
-                - scan_time: Time for a complete scan
-                - time_increment: Time between measurements
-                - range_min: Minimum range value
-                - range_max: Maximum range value
+                - ranges: Array of range measurements in meters
+                - angles: Array of corresponding angles in radians
+                - qualities: Array of quality values (0-255) if available, None otherwise
         """
         return self._subscriber.get_latest_data()
 
@@ -101,7 +94,7 @@ class RPLidarSensor:
         """Get the latest range measurements.
 
         Returns:
-            Array of range measurements if available, None otherwise.
+            Array of range measurements in meters if available, None otherwise.
         """
         return self._subscriber.get_ranges()
 
@@ -109,27 +102,17 @@ class RPLidarSensor:
         """Get the latest angle measurements.
 
         Returns:
-            Array of angle measurements if available, None otherwise.
+            Array of angle measurements in radians if available, None otherwise.
         """
         return self._subscriber.get_angles()
 
-    def get_intensities(self) -> np.ndarray | None:
-        """Get the latest intensity measurements.
+    def get_qualities(self) -> np.ndarray | None:
+        """Get the latest quality measurements.
 
         Returns:
-            Array of intensity measurements if available, None otherwise.
+            Array of quality values (0-255) if available, None otherwise.
         """
-        return self._subscriber.get_intensities()
-
-    def get_scan_info(self) -> dict[str, float] | None:
-        """Get scan metadata information.
-
-        Returns:
-            Dictionary with scan metadata if available, None otherwise.
-            Contains: angle_min, angle_max, angle_increment, scan_time,
-                     time_increment, range_min, range_max
-        """
-        return self._subscriber.get_scan_info()
+        return self._subscriber.get_qualities()
 
     def get_point_count(self) -> int:
         """Get the number of points in the latest scan.
@@ -142,13 +125,13 @@ class RPLidarSensor:
             return len(ranges)
         return 0
 
-    def has_intensities(self) -> bool:
-        """Check if the latest scan data includes intensity information.
+    def has_qualities(self) -> bool:
+        """Check if the latest scan data includes quality information.
 
         Returns:
-            True if intensity data is available, False otherwise.
+            True if quality data is available, False otherwise.
         """
-        return self._subscriber.has_intensities()
+        return self._subscriber.has_qualities()
 
     @property
     def fps(self) -> float:

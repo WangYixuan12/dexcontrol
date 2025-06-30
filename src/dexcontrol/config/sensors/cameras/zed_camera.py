@@ -13,24 +13,43 @@ from dataclasses import dataclass, field
 
 @dataclass
 class ZedCameraConfig:
+    """Configuration for the ZedCameraSensor.
+
+    Attributes:
+        _target_: The target class to instantiate.
+        name: A unique name for the sensor instance.
+        enable: Whether the sensor is enabled.
+        use_rtc: If True, RGB streams use the high-performance RTCSubscriber.
+                 If False, they use the standard RGBCameraSubscriber. Depth
+                 always uses a standard Zenoh subscriber.
+        enable_fps_tracking: If True, tracks and logs the FPS of all streams.
+        fps_log_interval: The interval in seconds for logging FPS.
+        subscriber_config: A dictionary containing the configurations for each
+                           individual stream (left_rgb, right_rgb, depth).
+    """
+
     _target_: str = "dexcontrol.sensors.camera.zed_camera.ZedCameraSensor"
     name: str = "zed_camera"
+    enable: bool = False
+    use_rtc: bool = True
     enable_fps_tracking: bool = False
     fps_log_interval: int = 30
-    enable: bool = False
+
     subscriber_config: dict = field(
-        default_factory=lambda: dict(
-            left_rgb=dict(
-                enable=True,
-                info_key="camera/head/left_rgb/info",
-            ),
-            right_rgb=dict(
-                enable=True,
-                info_key="camera/head/right_rgb/info",
-            ),
-            depth=dict(
-                enable=True,
-                topic="camera/head/depth",
-            ),
-        )
+        default_factory=lambda: {
+            "left_rgb": {
+                "enable": True,
+                "info_key": "camera/head/left_rgb/info",
+                "topic": "camera/head/left_rgb",
+            },
+            "right_rgb": {
+                "enable": True,
+                "info_key": "camera/head/right_rgb/info",
+                "topic": "camera/head/right_rgb",
+            },
+            "depth": {
+                "enable": True,
+                "topic": "camera/head/depth",
+            },
+        }
     )

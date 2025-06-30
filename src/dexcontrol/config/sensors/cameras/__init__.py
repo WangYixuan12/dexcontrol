@@ -10,3 +10,5 @@
 
 from .rgb_camera import RGBCameraConfig
 from .zed_camera import ZedCameraConfig
+
+__all__ = ["RGBCameraConfig", "ZedCameraConfig"]

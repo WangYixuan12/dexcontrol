@@ -38,6 +38,7 @@ def _make_rgb_camera(name: str) -> Callable[[], RGBCameraConfig]:
             rgb=dict(
                 enable=True,
                 info_key=f"camera/base/{name}/rgb/info",
+                topic=f"camera/base/{name}/rgb",
             )
         ),
         name=f"base_{name}_camera",

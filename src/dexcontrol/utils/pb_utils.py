@@ -15,10 +15,14 @@ from typing import Any, Literal
 
 from dexcontrol.proto import dexcontrol_query_pb2
 
+TYPE_SOFTWARE_VERSION = dict[
+    Literal["hardware_version", "software_version", "main_hash", "compile_time"], Any
+]
+
 
 def software_version_to_dict(
     version_msg: dexcontrol_query_pb2.SoftwareVersion,
-) -> dict[str, dict[Literal["hardware_version", "software_version", "main_hash"], Any]]:
+) -> dict[str, TYPE_SOFTWARE_VERSION]:
     """Convert a SoftwareVersion protobuf message to a dictionary.
 
     Args:
@@ -32,6 +36,7 @@ def software_version_to_dict(
             "hardware_version": value.hardware_version,
             "software_version": value.software_version,
             "main_hash": value.main_hash,
+            "compile_time": value.compile_time,
         }
         for key, value in version_msg.firmware_version.items()
     }

@@ -196,9 +196,7 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         help="Joint indices to plot (1-7). If not specified, plots all joints",
     )
-    parser.add_argument(
-        "--robot_model", type=str, default="vega-rc2", help="Robot name"
-    )
+    parser.add_argument("--robot_model", type=str, default="vega-1", help="Robot name")
     args = parser.parse_args()
 
     # Default to plotting both arms if none specified

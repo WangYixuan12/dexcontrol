@@ -10,15 +10,13 @@
 
 """Utility functions for displaying information in a Rich table format."""
 
-from typing import Literal
-
 from rich.console import Console
 from rich.table import Table
 
-TYPE_VERSION = dict[Literal["hardware_version", "software_version", "main_hash"], str]
+from dexcontrol.utils.pb_utils import TYPE_SOFTWARE_VERSION
 
 
-def show_software_version(version_info: dict[str, TYPE_VERSION]) -> None:
+def show_software_version(version_info: dict[str, TYPE_SOFTWARE_VERSION]) -> None:
     """Create a Rich table for displaying firmware version information.
 
     Args:
@@ -29,6 +27,7 @@ def show_software_version(version_info: dict[str, TYPE_VERSION]) -> None:
     table.add_column("Hardware Version")
     table.add_column("Software Version")
     table.add_column("Main Hash")
+    table.add_column("Compile Time")
 
     for component, version in sorted(version_info.items()):
         table.add_row(
@@ -36,6 +35,7 @@ def show_software_version(version_info: dict[str, TYPE_VERSION]) -> None:
             str(version["hardware_version"]),
             str(version["software_version"]),
             str(version["main_hash"]),
+            str(version["compile_time"]),
         )
 
     console = Console()

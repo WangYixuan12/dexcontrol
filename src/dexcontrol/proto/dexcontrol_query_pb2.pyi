@@ -86,14 +86,18 @@ class RebootComponent(_message.Message):
     def __init__(self, component: _Optional[_Union[RebootComponent.Component, str]] = ...) -> None: ...
 
 class FirmwareVersion(_message.Message):
-    __slots__ = ("hardware_version", "software_version", "main_hash")
+    __slots__ = ("hardware_version", "software_version", "compile_time", "main_hash", "sub_hash")
     HARDWARE_VERSION_FIELD_NUMBER: _ClassVar[int]
     SOFTWARE_VERSION_FIELD_NUMBER: _ClassVar[int]
+    COMPILE_TIME_FIELD_NUMBER: _ClassVar[int]
     MAIN_HASH_FIELD_NUMBER: _ClassVar[int]
+    SUB_HASH_FIELD_NUMBER: _ClassVar[int]
     hardware_version: int
     software_version: int
+    compile_time: int
     main_hash: str
-    def __init__(self, hardware_version: _Optional[int] = ..., software_version: _Optional[int] = ..., main_hash: _Optional[str] = ...) -> None: ...
+    sub_hash: str
+    def __init__(self, hardware_version: _Optional[int] = ..., software_version: _Optional[int] = ..., compile_time: _Optional[int] = ..., main_hash: _Optional[str] = ..., sub_hash: _Optional[str] = ...) -> None: ...
 
 class SoftwareVersion(_message.Message):
     __slots__ = ("firmware_version",)

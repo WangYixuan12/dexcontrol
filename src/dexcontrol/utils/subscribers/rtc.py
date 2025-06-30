@@ -155,7 +155,8 @@ class RTCSubscriber:
             async with websockets.connect(self._url) as websocket:
                 self._websocket = websocket
 
-                # Create an offer
+                # Create an offer. The server's assertive codec control makes
+                # client-side preferences redundant and potentially conflicting.
                 self._pc.addTransceiver("video", direction="recvonly")
                 offer = await self._pc.createOffer()
                 await self._pc.setLocalDescription(offer)

@@ -4,14 +4,15 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dexcontrol"
-version = "0.2.4"
-description = "A Python library of Robot Motion Control"
-authors = [{ name = "Dexmate", email = "contact@dexmate.com" }]
+version = "0.2.7"
+description = "A Python library of Sensing and Control for Dexmate's Robot"
+authors = [{ name = "Dexmate", email = "contact@dexmate.ai" }]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Framework :: Robot Framework :: Library",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",

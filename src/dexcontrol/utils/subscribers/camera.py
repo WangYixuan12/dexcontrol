@@ -99,7 +99,7 @@ class RGBCameraSubscriber(BaseZenohSubscriber):
                 return None
 
             try:
-                # Decode the RGB image
+                # Decode the image, which is typically in BGR format
                 image = decode_image(self._latest_raw_data)
                 return image
             except Exception as e:

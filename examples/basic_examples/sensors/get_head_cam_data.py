@@ -8,17 +8,16 @@
 # 2. Commercial License
 #    For commercial licensing terms, contact: contact@dexmate.ai
 
-"""Example script to read head camera data.
+"""This example demonstrates how to retrieve and display head camera data.
 
-This script demonstrates how to retrieve RGB and depth images along with their
-intrinsic parameters from the robot's head camera. It initializes a robot instance,
-reads the camera data, logs the information, and displays all camera feeds in a
-single tiled window using matplotlib.
+The script initializes the robot, fetches RGB and depth images from the head
+camera, and displays them in a tiled window. It also prints the camera's
+intrinsic parameters.
 """
 
 import json
 import math
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -29,53 +28,48 @@ from dexcontrol.config.vega import get_vega_config
 from dexcontrol.robot import Robot
 
 
-def display_tiled_cameras(images: list[np.ndarray], titles: list[str]) -> None:
-    """Display multiple camera images in a tiled matplotlib figure.
+def display_tiled_cameras(images: List[np.ndarray], titles: List[str]) -> None:
+    """Displays multiple images in a tiled matplotlib figure.
 
     Args:
-        images: List of numpy arrays representing images.
-        titles: List of strings for image titles.
+        images: A list of NumPy arrays, where each array is an image.
+        titles: A list of titles corresponding to each image.
 
     Raises:
-        ValueError: If no images are provided for display.
+        ValueError: If the list of images is empty.
     """
     if not images:
-        raise ValueError("No images provided for display")
+        raise ValueError("No images were provided for display.")
 
     num_images = len(images)
-
-    # Calculate grid dimensions (try to make it as square as possible)
     cols = math.ceil(math.sqrt(num_images))
     rows = math.ceil(num_images / cols)
 
-    # Create matplotlib figure
-    fig = plt.figure(figsize=(15, 10))
+    fig, axes = plt.subplots(rows, cols, figsize=(15, 10), squeeze=False)
     fig.suptitle("Head Camera Feeds", fontsize=16)
 
-    # Display each image using subplot
     for i, (img, title) in enumerate(zip(images, titles)):
-        ax = fig.add_subplot(rows, cols, i + 1)
-
-        # Handle different image types (RGB vs depth)
+        ax = axes[i // cols, i % cols]
         if "depth" in title.lower():
-            # Display depth images with a colormap
             ax.imshow(img, cmap="viridis")
         else:
-            # Assume RGB format for color images
             ax.imshow(img)
-
         ax.set_title(title)
-        ax.axis("off")  # Remove axis ticks and labels
+        ax.axis("off")
+
+    # Hide any unused subplots
+    for i in range(num_images, rows * cols):
+        axes[i // cols, i % cols].axis("off")
 
     plt.tight_layout()
     plt.show()
 
 
-def _print_camera_info(camera_info: dict[str, Any] | None) -> None:
-    """Print camera information in a formatted way.
+def print_camera_info(camera_info: Optional[Dict[str, Any]]) -> None:
+    """Prints camera information in a formatted JSON block.
 
     Args:
-        camera_info: Dictionary containing camera information, or None.
+        camera_info: A dictionary containing camera metadata, or None.
     """
     if camera_info:
         print("\n" + "=" * 50)
@@ -84,101 +78,70 @@ def _print_camera_info(camera_info: dict[str, Any] | None) -> None:
         print(json.dumps(camera_info, indent=2))
         print("=" * 50 + "\n")
     else:
-        logger.warning("No camera info available")
+        logger.warning("No camera info available.")
 
 
-def _extract_camera_images(
-    camera_data: dict[str, np.ndarray],
-) -> tuple[list[np.ndarray], list[str]]:
-    """Extract valid images and titles from camera data.
+def extract_camera_data(
+    camera_data: Dict[str, Optional[np.ndarray]],
+) -> Tuple[List[np.ndarray], List[str]]:
+    """Extracts valid images and their titles from the camera data dictionary.
 
     Args:
-        camera_data: Dictionary containing camera data with keys as identifiers
-            and values as numpy arrays.
+        camera_data: A dictionary where keys are stream identifiers (e.g.,
+            'left_rgb') and values are either a NumPy array (the image) or
+            None.
 
     Returns:
-        A tuple containing:
-            - List of valid image arrays
-            - List of corresponding titles
+        A tuple containing two lists: one for valid images and one for their
+        corresponding titles.
 
     Raises:
-        ValueError: If no valid camera images are available.
+        ValueError: If no valid images are found in the camera data.
     """
-    images = []
-    titles = []
-
+    images, titles = [], []
     for key, data in camera_data.items():
         if data is not None:
             images.append(data)
             titles.append(key.replace("_", " ").title())
-            logger.info(f"{key} data shape: {data.shape}")
+            logger.info(f"Retrieved '{key}' with shape: {data.shape}")
 
     if not images:
-        raise ValueError("No valid camera images available")
+        raise ValueError("No valid camera images were retrieved.")
 
     return images, titles
 
 
-def get_head_camera_data(robot: Robot) -> dict[str, np.ndarray] | None:
-    """Retrieve head camera data from the robot.
-
-    Args:
-        robot: Robot instance to get camera data from.
-
-    Returns:
-        Dictionary containing camera data, or None if retrieval failed.
-    """
-    try:
-        camera_data = robot.sensors.head_camera.get_obs(
-            obs_keys=[
-                "left_rgb",
-                "right_rgb",
-                "depth",
-            ]
-        )
-        return camera_data
-    except Exception as e:
-        logger.error(f"Failed to retrieve camera data: {e}")
-        return None
-
-
 def main() -> None:
-    """Get and display head camera data in a tiled window.
-
-    Creates a robot instance and retrieves RGB/depth images from the head camera,
-    then displays them in a single tiled window using matplotlib.
-
-    Raises:
-        SystemExit: If camera data retrieval or processing fails.
-    """
+    """Initializes the robot, retrieves head camera data, and displays it."""
     configs = get_vega_config()
     configs.sensors.head_camera.enable = True
     robot = Robot(configs=configs)
 
     try:
-        # Get camera information and print it
-        camera_info = robot.sensors.head_camera.camera_info
-        _print_camera_info(camera_info)
+        # Print camera intrinsics and other metadata.
+        print_camera_info(robot.sensors.head_camera.camera_info)
 
-        # Get camera data
-        camera_data = get_head_camera_data(robot)
-        if camera_data is None:
-            logger.error("Failed to retrieve camera data")
+        # Retrieve all available observations from the head camera.
+        obs_keys = ["left_rgb", "right_rgb", "depth"]
+        camera_data = robot.sensors.head_camera.get_obs(obs_keys=obs_keys)
+
+        if not camera_data:
+            logger.error("Failed to retrieve camera data.")
             return
 
-        # Extract images and titles
-        images, titles = _extract_camera_images(camera_data)
+        # Extract images and titles from the raw data.
+        images, titles = extract_camera_data(camera_data)
 
-        logger.info(f"Displaying {len(images)} head camera feeds")
-
-        # Display the camera feeds using matplotlib
+        # Display the camera feeds in a single window.
+        logger.info(f"Displaying {len(images)} head camera feeds...")
         display_tiled_cameras(images, titles)
 
     except ValueError as e:
-        logger.error(f"Camera processing error: {e}")
+        logger.error(f"Error processing camera data: {e}")
     except Exception as e:
-        logger.error(f"Unexpected error: {e}")
+        logger.error(f"An unexpected error occurred: {e}", exc_info=True)
     finally:
+        logger.info("Shutting down the robot.")
         robot.shutdown()
 
 

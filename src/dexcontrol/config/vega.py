@@ -167,6 +167,12 @@ class Vega1Config(VegaConfig):
             wheels_dist=0.45,
         )
     )
+    head: HeadConfig = field(
+        default_factory=lambda: HeadConfig(
+            joint_limit_lower=[-1.483, -2.792, -1.378],
+            joint_limit_upper=[1.483, 2.792, 1.483],
+        )
+    )
 
 
 # Register variant configurations

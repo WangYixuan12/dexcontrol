@@ -36,8 +36,8 @@ class LidarSubscriber(BaseZenohSubscriber):
     """Zenoh subscriber for LIDAR scan data.
 
     This subscriber handles LIDAR scan data encoded using the dexsensor
-    lidar serialization format with compression.
-    Uses lazy decoding - data is only decoded when requested.
+    lidar serialization format. Uses lazy decoding - data is only decoded
+    when requested.
     """
 
     def __init__(
@@ -89,16 +89,9 @@ class LidarSubscriber(BaseZenohSubscriber):
         Returns:
             Latest scan data dictionary if available, None otherwise.
             Dictionary contains:
-                - ranges: Array of range measurements
-                - angles: Array of corresponding angles
-                - intensities: Array of intensity values (if available)
-                - angle_min: Minimum angle of the scan
-                - angle_max: Maximum angle of the scan
-                - angle_increment: Angular distance between measurements
-                - scan_time: Time for a complete scan
-                - time_increment: Time between measurements
-                - range_min: Minimum range value
-                - range_max: Maximum range value
+                - ranges: Array of range measurements in meters
+                - angles: Array of corresponding angles in radians
+                - qualities: Array of quality values (0-255) if available, None otherwise
         """
         with self._data_lock:
             if self._latest_raw_data is None:
@@ -136,7 +129,7 @@ class LidarSubscriber(BaseZenohSubscriber):
         """Get the latest range measurements.
 
         Returns:
-            Array of range measurements if available, None otherwise.
+            Array of range measurements in meters if available, None otherwise.
         """
         scan_data = self.get_latest_data()
         if scan_data is not None:
@@ -147,54 +140,32 @@ class LidarSubscriber(BaseZenohSubscriber):
         """Get the latest angle measurements.
 
         Returns:
-            Array of angle measurements if available, None otherwise.
+            Array of angle measurements in radians if available, None otherwise.
         """
         scan_data = self.get_latest_data()
         if scan_data is not None:
             return scan_data["angles"]
         return None
 
-    def get_intensities(self) -> np.ndarray | None:
-        """Get the latest intensity measurements.
+    def get_qualities(self) -> np.ndarray | None:
+        """Get the latest quality measurements.
 
         Returns:
-            Array of intensity measurements if available, None otherwise.
-        """
-        scan_data = self.get_latest_data()
-        if scan_data is not None and "intensities" in scan_data:
-            intensities = scan_data["intensities"]
-            return intensities if intensities is not None else None
-        return None
-
-    def get_scan_info(self) -> dict[str, float] | None:
-        """Get scan metadata information.
-
-        Returns:
-            Dictionary with scan metadata if available, None otherwise.
-            Contains: angle_min, angle_max, angle_increment, scan_time,
-                     time_increment, range_min, range_max
+            Array of quality values (0-255) if available, None otherwise.
         """
         scan_data = self.get_latest_data()
         if scan_data is not None:
-            return {
-                "angle_min": scan_data["angle_min"],
-                "angle_max": scan_data["angle_max"],
-                "angle_increment": scan_data["angle_increment"],
-                "scan_time": scan_data["scan_time"],
-                "time_increment": scan_data["time_increment"],
-                "range_min": scan_data["range_min"],
-                "range_max": scan_data["range_max"],
-            }
+            return scan_data.get("qualities")
         return None
 
-    def has_intensities(self) -> bool:
-        """Check if the latest scan data includes intensity information.
+    def has_qualities(self) -> bool:
+        """Check if the latest scan data includes quality information.
 
         Returns:
-            True if intensity data is available, False otherwise.
+            True if quality data is available, False otherwise.
         """
         scan_data = self.get_latest_data()
         if scan_data is not None:
-            intensities = scan_data.get("intensities")
-            return intensities is not None and len(intensities) > 0
+            qualities = scan_data.get("qualities")
+            return qualities is not None and len(qualities) > 0
         return False

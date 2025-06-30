@@ -8,64 +8,94 @@
 # 2. Commercial License
 #    For commercial licensing terms, contact: contact@dexmate.ai
 
-"""RGB camera sensor implementation using RTC subscriber with Zenoh query."""
+"""RGB camera sensor implementation using RTC or Zenoh subscriber."""
 
 import logging
+from typing import Optional, Union
 
 import numpy as np
 import zenoh
 
+from dexcontrol.config.sensors.cameras import RGBCameraConfig
 from dexcontrol.utils.rtc_utils import create_rtc_subscriber_with_config
+from dexcontrol.utils.subscribers.camera import RGBCameraSubscriber
+from dexcontrol.utils.subscribers.rtc import RTCSubscriber
 
 logger = logging.getLogger(__name__)
 
 
 class RGBCameraSensor:
-    """RGB camera sensor using RTC subscriber.
+    """RGB camera sensor that supports both RTC and standard Zenoh subscribers.
 
-    This sensor provides RGB image data from a camera using RTC.
-    It first queries Zenoh for RTC connection information, then creates
-    a RTC subscriber for efficient data handling.
+    This sensor provides RGB image data from a camera. It can be configured to use
+    either a high-performance RTC subscriber for real-time video streams or a
+    standard Zenoh subscriber for raw image topics. The mode is controlled by the
+    `use_rtc` flag in the `RGBCameraConfig`.
     """
 
     def __init__(
         self,
-        configs,
+        configs: RGBCameraConfig,
         zenoh_session: zenoh.Session,
-        *args,
-        **kwargs,
     ) -> None:
-        """Initialize the RGB camera sensor.
+        """Initialize the RGB camera sensor based on the provided configuration.
 
         Args:
-            configs: Configuration for the RGB camera sensor.
+            configs: Configuration object for the RGB camera sensor.
             zenoh_session: Active Zenoh session for communication.
         """
         self._name = configs.name
+        self._subscriber: Optional[Union[RTCSubscriber, RGBCameraSubscriber]] = None
 
-        # Create the RTC subscriber using the utility function
-        self._subscriber = create_rtc_subscriber_with_config(
-            zenoh_session=zenoh_session,
-            config=configs.subscriber_config.rgb,
-            name=f"{self._name}_subscriber",
-            enable_fps_tracking=configs.enable_fps_tracking,
-            fps_log_interval=configs.fps_log_interval,
-        )
+        subscriber_config = configs.subscriber_config.get("rgb", {})
+        if not subscriber_config or not subscriber_config.get("enable", False):
+            logger.info(f"RGBCameraSensor '{self._name}' is disabled in config.")
+            return
 
-        if self._subscriber is None:
-            logger.warning(f"Failed to create RTC subscriber for {self._name}")
-            # Continue initialization without subscriber
+        try:
+            if configs.use_rtc:
+                logger.info(f"'{self._name}': Using RTC subscriber.")
+                self._subscriber = create_rtc_subscriber_with_config(
+                    zenoh_session=zenoh_session,
+                    config=subscriber_config,
+                    name=f"{self._name}_subscriber",
+                    enable_fps_tracking=configs.enable_fps_tracking,
+                    fps_log_interval=configs.fps_log_interval,
+                )
+            else:
+                logger.info(f"'{self._name}': Using standard Zenoh subscriber.")
+                topic = subscriber_config.get("topic")
+                if topic:
+                    self._subscriber = RGBCameraSubscriber(
+                        topic=topic,
+                        zenoh_session=zenoh_session,
+                        name=f"{self._name}_subscriber",
+                        enable_fps_tracking=configs.enable_fps_tracking,
+                        fps_log_interval=configs.fps_log_interval,
+                    )
+                else:
+                    logger.warning(
+                        f"No 'topic' specified for '{self._name}' in non-RTC mode."
+                    )
+
+            if self._subscriber is None:
+                logger.warning(f"Failed to create subscriber for '{self._name}'.")
+
+        except Exception as e:
+            logger.error(f"Error creating subscriber for '{self._name}': {e}")
+            self._subscriber = None
 
     def shutdown(self) -> None:
-        """Shutdown the camera sensor."""
+        """Shutdown the camera sensor and release all resources."""
         if self._subscriber:
             self._subscriber.shutdown()
+            logger.info(f"'{self._name}' sensor shut down.")
 
     def is_active(self) -> bool:
         """Check if the camera sensor is actively receiving data.
 
         Returns:
-            True if receiving data, False otherwise.
+            True if the subscriber exists and is receiving data, False otherwise.
         """
         return self._subscriber.is_active() if self._subscriber else False
 
@@ -76,15 +106,18 @@ class RGBCameraSensor:
             timeout: Maximum time to wait in seconds.
 
         Returns:
-            True if sensor becomes active, False if timeout is reached.
+            True if the sensor becomes active within the timeout, False otherwise.
         """
-        return self._subscriber.wait_for_active(timeout) if self._subscriber else False
+        if not self._subscriber:
+            logger.warning(f"'{self._name}': Cannot wait, no subscriber initialized.")
+            return False
+        return self._subscriber.wait_for_active(timeout)
 
     def get_obs(self) -> np.ndarray | None:
-        """Get the latest RGB image data.
+        """Get the latest observation (RGB image) from the sensor.
 
         Returns:
-            Latest RGB image as numpy array (HxWxC) if available, None otherwise.
+            The latest RGB image as a numpy array (HxWxC) if available, otherwise None.
         """
         return self._subscriber.get_latest_data() if self._subscriber else None
 

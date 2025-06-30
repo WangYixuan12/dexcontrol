@@ -44,7 +44,7 @@ def main():
         if head_imu_data is not None:
             logger.info("IMU Data Retrieved:")
             for key, value in head_imu_data.items():
-                logger.info(f"  {key}: {np.round(value, 3)}")
+                logger.info(f"  {key}: {np.round(value, 4)}")
 
         else:
             logger.warning("No IMU data available")
@@ -53,7 +53,7 @@ def main():
         if base_imu_data is not None:
             logger.info("Base IMU Data Retrieved:")
             for key, value in base_imu_data.items():
-                logger.info(f"  {key}: {np.round(value, 3)}")
+                logger.info(f"  {key}: {np.round(value, 4)}")
 
         else:
             logger.warning("No Base IMU data available")

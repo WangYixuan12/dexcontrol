@@ -51,6 +51,7 @@ from dexcontrol.sensors import Sensors
 from dexcontrol.utils.constants import ROBOT_NAME_ENV_VAR
 from dexcontrol.utils.os_utils import get_robot_model, resolve_key_name
 from dexcontrol.utils.pb_utils import (
+    TYPE_SOFTWARE_VERSION,
     ComponentStatus,
     software_version_to_dict,
     status_to_dict,
@@ -416,9 +417,12 @@ class Robot:
         timeout_sec: Final[int] = 8
         check_interval: Final[float] = 0.1  # Check every 100ms
 
-        with console.status(
+        status = console.status(
             "[bold green]Waiting for components to become active..."
-        ) as status:
+        )
+        status.start()
+
+        try:
             for name in component_names:
                 # Check if shutdown was triggered
                 if self._shutdown_called:
@@ -447,6 +451,8 @@ class Robot:
 
                         # Wait a short interval before checking again
                         time.sleep(check_interval)
+        finally:
+            status.stop()
 
         if not all(actives):
             self.shutdown()
@@ -527,34 +533,30 @@ class Robot:
                         f"Error stopping component {component.__class__.__name__}: {e}"
                     )
 
-        # Longer delay to ensure all stop operations complete and background threads settle
-        time.sleep(0.3)
+        # Brief delay to ensure all stop operations complete
+        time.sleep(0.1)
 
         # Shutdown sensors first (they may have background threads)
         try:
-            self.sensors.shutdown()
-            # Give extra time for all sensor subscribers to undeclare cleanly
-            time.sleep(0.5)
+            if hasattr(self, "sensors") and self.sensors is not None:
+                self.sensors.shutdown()
+                # Give time for sensor subscribers to undeclare cleanly
+                time.sleep(0.2)
         except Exception as e:  # pylint: disable=broad-except
             logger.error(f"Error shutting down sensors: {e}")
-
-        # Additional delay for sensor shutdown to complete
-        time.sleep(0.2)
 
         # Shutdown components in reverse order
         for component in reversed(self._components):
             if component is not None:
                 try:
                     component.shutdown()
-                    # Small delay between each component shutdown to prevent race conditions
-                    time.sleep(0.05)
                 except Exception as e:  # pylint: disable=broad-except
                     logger.error(
                         f"Error shutting down component {component.__class__.__name__}: {e}"
                     )
 
-        # Longer delay to allow all component shutdown to complete
-        time.sleep(0.5)
+        # Brief delay to allow component shutdown to complete
+        time.sleep(0.1)
 
         # Enhanced Zenoh session close with better synchronization
         zenoh_close_success = False
@@ -563,8 +565,8 @@ class Robot:
             """Close zenoh session in a separate thread."""
             nonlocal zenoh_close_success
             try:
-                # Give Zenoh even more time to clean up internal resources and settle threads
-                time.sleep(0.5)
+                # Brief delay for Zenoh cleanup
+                time.sleep(0.1)
                 self._zenoh_session.close()
                 zenoh_close_success = True
             except Exception as e:  # pylint: disable=broad-except
@@ -574,20 +576,19 @@ class Robot:
         close_thread = threading.Thread(target=_close_zenoh_session, daemon=False)
         close_thread.start()
 
-        # Wait for close with extended timeout to avoid race conditions
+        # Wait for close with reasonable timeout
         close_thread.join(timeout=3.0)
 
         if close_thread.is_alive():
             logger.warning(
-                "Zenoh session close timed out after 5s, continuing shutdown"
+                "Zenoh session close timed out after 1s, continuing shutdown"
             )
-            # Force daemon mode so it doesn't block process exit
-            close_thread.daemon = True
+            # Thread will be left to finish in background, but won't block shutdown
         elif zenoh_close_success:
             logger.debug("Zenoh session closed cleanly")
 
-        # Extended final delay to allow any remaining Zenoh background threads to finish
-        time.sleep(0.8)
+        # Brief final delay for cleanup
+        time.sleep(0.5)
 
         logger.info("Robot shutdown complete")
 
@@ -601,13 +602,7 @@ class Robot:
 
     def get_software_version(
         self, show: bool = True
-    ) -> dict[
-        str,
-        dict[
-            Literal["hardware_version", "software_version", "main_hash"],
-            int | str,
-        ],
-    ]:
+    ) -> dict[str, TYPE_SOFTWARE_VERSION]:
         """Retrieve software version information for all components.
 
         Args:
