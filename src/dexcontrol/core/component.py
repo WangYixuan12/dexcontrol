@@ -634,6 +634,8 @@ class RobotJointComponent(RobotComponent):
         relative: bool = False,
         wait_time: float = 0.0,
         wait_kwargs: dict[str, float] | None = None,
+        exit_on_reach: bool = False,
+        exit_on_reach_kwargs: dict[str, Any] | None = None,
     ) -> None:
         """Send joint position control commands.
 
@@ -645,6 +647,8 @@ class RobotJointComponent(RobotComponent):
             relative: If True, the joint positions are relative to the current position.
             wait_time: Time to wait after sending command in seconds.
             wait_kwargs: Optional parameters for trajectory generation.
+            exit_on_reach: If True, the function will exit when the joint positions are reached.
+            exit_on_reach_kwargs: Optional parameters for exit when the joint positions are reached.
 
         Raises:
             ValueError: If joint_pos dictionary contains invalid joint names.
@@ -659,6 +663,41 @@ class RobotJointComponent(RobotComponent):
         self._send_position_command(joint_pos)
 
         if wait_time > 0.0:
+            self._wait_for_position(
+                joint_pos, wait_time, exit_on_reach, exit_on_reach_kwargs
+            )
+
+    def _wait_for_position(
+        self,
+        joint_pos: Float[np.ndarray, " N"] | list[float] | dict[str, float],
+        wait_time: float,
+        exit_on_reach: bool = False,
+        exit_on_reach_kwargs: dict[str, Any] | None = None,
+    ) -> None:
+        """Wait for a specified time with optional early exit when position is reached.
+
+        Args:
+            joint_pos: Target joint positions to check against.
+            wait_time: Maximum time to wait in seconds.
+            exit_on_reach: If True, exit early when joint positions are reached.
+            exit_on_reach_kwargs: Optional parameters for position checking.
+        """
+        if exit_on_reach:
+            # Set default tolerance if not provided
+            exit_on_reach_kwargs = exit_on_reach_kwargs or {}
+            exit_on_reach_kwargs.setdefault("tolerance", 0.05)
+
+            # Convert to expected format for is_joint_pos_reached
+            if isinstance(joint_pos, list):
+                joint_pos = np.array(joint_pos, dtype=np.float32)
+
+            # Wait until position is reached or timeout
+            start_time = time.time()
+            while time.time() - start_time < wait_time:
+                if self.is_joint_pos_reached(joint_pos, **exit_on_reach_kwargs):
+                    break
+                time.sleep(0.01)
+        else:
             time.sleep(wait_time)
 
     def _send_position_command(self, joint_pos: Float[np.ndarray, " N"]) -> None:
@@ -679,12 +718,16 @@ class RobotJointComponent(RobotComponent):
         self,
         pose_name: str,
         wait_time: float = 3.0,
+        exit_on_reach: bool = False,
+        exit_on_reach_kwargs: dict[str, float] | None = None,
     ) -> None:
         """Move the component to a predefined pose.
 
         Args:
             pose_name: Name of the pose to move to.
             wait_time: Time to wait for the component to reach the pose.
+            exit_on_reach: If True, the function will exit when the joint positions are reached.
+            exit_on_reach_kwargs: Optional parameters for exit when the joint positions are reached.
 
         Raises:
             ValueError: If pose pool is not available or if an invalid pose name is provided.
@@ -696,7 +739,12 @@ class RobotJointComponent(RobotComponent):
                 f"Invalid pose name: {pose_name}. Available poses: {list(self._pose_pool.keys())}"
             )
         pose = self._pose_pool[pose_name]
-        self.set_joint_pos(pose, wait_time=wait_time)
+        self.set_joint_pos(
+            pose,
+            wait_time=wait_time,
+            exit_on_reach=exit_on_reach,
+            exit_on_reach_kwargs=exit_on_reach_kwargs,
+        )
 
     def is_joint_pos_reached(
         self,
@@ -819,11 +867,12 @@ class RobotJointComponent(RobotComponent):
         else:
             # Check all joints, ensuring arrays are same length
             min_len = min(len(current_pos), len(target_pos))
-            return bool(
+            is_reached = bool(
                 np.all(
                     np.abs(current_pos[:min_len] - target_pos[:min_len]) <= tolerance
                 )
             )
+            return is_reached
 
     def is_pose_reached(
         self,

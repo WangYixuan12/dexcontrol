@@ -79,6 +79,8 @@ class Head(RobotJointComponent):
         relative: bool = False,
         wait_time: float = 0.0,
         wait_kwargs: dict[str, float] | None = None,
+        exit_on_reach: bool = False,
+        exit_on_reach_kwargs: dict[str, float] | None = None,
     ) -> None:
         """Send joint position control commands to the head.
 
@@ -91,12 +93,19 @@ class Head(RobotJointComponent):
             wait_time: Time to wait after sending command in seconds. If 0, returns
                 immediately after sending command.
             wait_kwargs: Optional parameters for trajectory generation (not used in Head).
+            exit_on_reach: If True, the function will exit when the joint positions are reached.
+            exit_on_reach_kwargs: Optional parameters for exit when the joint positions are reached.
 
         Raises:
             ValueError: If joint_pos dictionary contains invalid joint names.
         """
         self.set_joint_pos_vel(
-            joint_pos, joint_vel=None, relative=relative, wait_time=wait_time
+            joint_pos,
+            joint_vel=None,
+            relative=relative,
+            wait_time=wait_time,
+            exit_on_reach=exit_on_reach,
+            exit_on_reach_kwargs=exit_on_reach_kwargs,
         )
 
     def set_joint_pos_vel(
@@ -109,6 +118,8 @@ class Head(RobotJointComponent):
         | None = None,
         relative: bool = False,
         wait_time: float = 0.0,
+        exit_on_reach: bool = False,
+        exit_on_reach_kwargs: dict[str, float] | None = None,
     ) -> None:
         """Send control commands to the head.
 
@@ -126,6 +137,8 @@ class Head(RobotJointComponent):
             relative: If True, the joint positions are relative to the current position.
             wait_time: Time to wait after sending command in seconds. If 0, returns
                 immediately after sending command.
+            exit_on_reach: If True, the function will exit when the joint positions are reached.
+            exit_on_reach_kwargs: Optional parameters for exit when the joint positions are reached.
 
         Raises:
             ValueError: If wait_time is negative or joint_pos dictionary contains
@@ -149,8 +162,12 @@ class Head(RobotJointComponent):
         self._publish_control(control_msg)
 
         # Wait if specified
-        if wait_time > 0.0:
-            time.sleep(wait_time)
+        self._wait_for_position(
+            joint_pos=joint_pos,
+            wait_time=wait_time,
+            exit_on_reach=exit_on_reach,
+            exit_on_reach_kwargs=exit_on_reach_kwargs,
+        )
 
     def set_mode(self, mode: Literal["enable", "disable"]) -> None:
         """Set the operating mode of the head.

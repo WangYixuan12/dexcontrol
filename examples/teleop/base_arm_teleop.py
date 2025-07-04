@@ -85,7 +85,6 @@ class BaseIKController:
             f"Initializing Motion Manager with config: {ManagerConfigDict[self.bot.robot_model]()}."
         )
         try:
-            self.bot.heartbeat.pause()
             self.motion_manager = MotionManager(
                 config=ManagerConfigDict[self.bot.robot_model]()
             )
@@ -97,7 +96,6 @@ class BaseIKController:
                 initialize_local_ik=True,
                 initial_joint_configuration_dict=joint_pos_dict,
             )
-            self.bot.heartbeat.resume()
             logger.success("Motion Manager setup complete")
         except Exception as e:
             logger.error(f"Error initializing Motion Manager: {e}")

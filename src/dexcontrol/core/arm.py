@@ -15,7 +15,7 @@ communication and the ArmWrenchSensor class for reading wrench sensor data.
 """
 
 import time
-from typing import Final, Literal
+from typing import Any, Final, Literal
 
 import numpy as np
 import zenoh
@@ -72,6 +72,15 @@ class Arm(RobotJointComponent):
                 configs.wrench_sub_topic, zenoh_session
             )
 
+        self._default_max_vel = configs.default_max_vel
+        self._default_control_hz = configs.default_control_hz
+        if self._default_max_vel > 3.0:
+            logger.warning(
+                f"Max velocity is set to {self._default_max_vel}, which is greater than 3.0. This is not recommended."
+            )
+            self._default_max_vel = 3.0
+            logger.warning("Max velocity is clamped to 3.0")
+
     def set_mode(self, mode: Literal["position", "disable"]) -> None:
         """Sets the operating mode of the arm.
 
@@ -112,6 +121,8 @@ class Arm(RobotJointComponent):
         relative: bool = False,
         wait_time: float = 0.0,
         wait_kwargs: dict[str, float] | None = None,
+        exit_on_reach: bool = False,
+        exit_on_reach_kwargs: dict[str, Any] | None = None,
     ) -> None:
         """Controls the arm in joint position mode.
 
@@ -130,7 +141,8 @@ class Arm(RobotJointComponent):
                 wait_time > 0). Supported keys:
                 - control_hz: Control frequency in Hz (default: 100).
                 - max_vel: Maximum velocity in rad/s (default: 0.5).
-
+            exit_on_reach: If True, the function will exit when the joint positions are reached.
+            exit_on_reach_kwargs: Optional parameters for exit when the joint positions are reached.
         Raises:
             ValueError: If joint_pos dictionary contains invalid joint names.
         """
@@ -142,7 +154,13 @@ class Arm(RobotJointComponent):
         )
 
         if wait_time > 0.0:
-            self._execute_trajectory_motion(resolved_joint_pos, wait_time, wait_kwargs)
+            self._execute_trajectory_motion(
+                resolved_joint_pos,
+                wait_time,
+                wait_kwargs,
+                exit_on_reach,
+                exit_on_reach_kwargs,
+            )
         else:
             # Convert to array format
             if isinstance(resolved_joint_pos, (list, dict)):
@@ -156,6 +174,8 @@ class Arm(RobotJointComponent):
         joint_pos: Float[np.ndarray, " N"] | list[float] | dict[str, float],
         wait_time: float,
         wait_kwargs: dict[str, float],
+        exit_on_reach: bool = False,
+        exit_on_reach_kwargs: dict[str, Any] | None = None,
     ) -> None:
         """Execute trajectory-based motion to target position.
 
@@ -163,10 +183,14 @@ class Arm(RobotJointComponent):
             joint_pos: Target joint positions as list, numpy array, or dictionary.
             wait_time: Total time for the motion.
             wait_kwargs: Parameters for trajectory generation.
+            exit_on_reach: If True, the function will exit when the joint positions are reached.
+            exit_on_reach_kwargs: Optional parameters for exit when the joint positions are reached.
         """
         # Set default parameters
-        control_hz = wait_kwargs.get("control_hz", 100)
-        max_vel = wait_kwargs.get("max_vel", 0.5)
+        control_hz = wait_kwargs.get("control_hz", self._default_control_hz)
+        max_vel = wait_kwargs.get("max_vel", self._default_max_vel)
+        exit_on_reach_kwargs = exit_on_reach_kwargs or {}
+        exit_on_reach_kwargs.setdefault("tolerance", 0.05)
 
         # Create rate limiter and get current position
         rate_limiter = RateLimiter(control_hz)
@@ -186,7 +210,6 @@ class Arm(RobotJointComponent):
         trajectory, _ = generate_linear_trajectory(
             current_joint_pos, target_pos, max_vel, control_hz
         )
-
         # Execute trajectory with time limit
         start_time = time.time()
         for pos in trajectory:
@@ -199,6 +222,10 @@ class Arm(RobotJointComponent):
         while time.time() - start_time < wait_time:
             self._send_position_command(target_pos)
             rate_limiter.sleep()
+            if exit_on_reach and self.is_joint_pos_reached(
+                target_pos, **exit_on_reach_kwargs
+            ):
+                break
 
     def set_joint_pos_vel(
         self,

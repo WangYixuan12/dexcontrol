@@ -59,7 +59,7 @@ def main(
             body_part = "left_arm" if current_side == "left" else "right_arm"
             target_pos = bot.compensate_torso_pitch(target_pos, body_part)
 
-            arm.set_joint_pos(target_pos, wait_time=3.0)
+            arm.set_joint_pos(target_pos, wait_time=3.0, exit_on_reach=True)
             logger.info(f"Moved {current_side} arm to {target} position")
 
     finally:

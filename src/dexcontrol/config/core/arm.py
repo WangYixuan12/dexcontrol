@@ -21,6 +21,8 @@ class ArmConfig:
     control_pub_topic: str = "control/arm/right"
     set_mode_query: str = "mode/arm/right"
     dof: int = 7
+    default_max_vel: float = 2.0  # do not go over 3.0
+    default_control_hz: int = 100
     joint_name: list[str] = field(
         default_factory=lambda: [f"R_arm_j{i + 1}" for i in range(7)]
     )

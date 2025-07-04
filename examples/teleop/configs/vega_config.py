@@ -19,6 +19,15 @@ from dexmotion.configs.core.motion_manager_config import (
     Vega1MotionManagerConfig,
 )
 
+try:
+    from dexmotion.configs.core.motion_manager_config_internal import (
+        VegaRC2MotionManagerConfig,
+    )
+
+    _HAS_VEGA_RC2 = True
+except ImportError:
+    _HAS_VEGA_RC2 = False
+
 
 @dataclass
 class CustomVega1MotionManagerConfig(Vega1MotionManagerConfig):

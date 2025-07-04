@@ -54,7 +54,7 @@ class CartesianTeleopNode(BaseArmTeleopNode):
         self.arm_ik_controller = BaseIKController(self.bot, visualize=visualize)
 
         # Motion control parameters
-        self.translation_step = 0.005  # x, y, z steps in meters
+        self.translation_step = 0.01  # x, y, z steps in meters
         self.rotation_step = 0.05  # roll, pitch, yaw steps in radians
 
         # Update player LEDs for mode indication

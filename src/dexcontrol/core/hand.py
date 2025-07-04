@@ -14,6 +14,8 @@ This module provides the Hand class for controlling a robotic hand through Zenoh
 communication. It handles joint position control and state monitoring.
 """
 
+from typing import Any
+
 import numpy as np
 import zenoh
 from jaxtyping import Float
@@ -51,8 +53,8 @@ class Hand(RobotJointComponent):
         )
 
         # Store predefined hand positions as private attributes
-        self._joint_pos_open = np.array(configs.joint_pos_open, dtype=np.float32)
-        self._joint_pos_close = np.array(configs.joint_pos_close, dtype=np.float32)
+        self._joint_pos_open = np.array(configs.pose_pool["open"], dtype=np.float32)
+        self._joint_pos_close = np.array(configs.pose_pool["close"], dtype=np.float32)
 
     def _send_position_command(
         self, joint_pos: Float[np.ndarray, " N"] | list[float]
@@ -73,6 +75,8 @@ class Hand(RobotJointComponent):
         relative: bool = False,
         wait_time: float = 0.0,
         wait_kwargs: dict[str, float] | None = None,
+        exit_on_reach: bool = False,
+        exit_on_reach_kwargs: dict[str, Any] | None = None,
     ) -> None:
         """Send joint position control commands to the hand.
 
@@ -84,27 +88,61 @@ class Hand(RobotJointComponent):
             relative: If True, the joint positions are relative to the current position.
             wait_time: Time to wait after setting the joint positions.
             wait_kwargs: Optional parameters for trajectory generation (not used in Hand).
+            exit_on_reach: If True, the function will exit when the joint positions are reached.
+            exit_on_reach_kwargs: Optional parameters for exit when the joint positions are reached.
 
         Raises:
             ValueError: If joint_pos dictionary contains invalid joint names.
         """
-        super().set_joint_pos(joint_pos, relative, wait_time, wait_kwargs)
+        super().set_joint_pos(
+            joint_pos,
+            relative,
+            wait_time,
+            wait_kwargs,
+            exit_on_reach,
+            exit_on_reach_kwargs,
+        )
 
-    def open_hand(self, wait_time: float = 0.0) -> None:
+    def open_hand(
+        self,
+        wait_time: float = 0.0,
+        exit_on_reach: bool = False,
+        exit_on_reach_kwargs: dict[str, Any] | None = None,
+    ) -> None:
         """Open the hand to the predefined open position.
 
         Args:
             wait_time: Time to wait after opening the hand.
+            exit_on_reach: If True, the function will exit when the joint positions are reached.
+            exit_on_reach_kwargs: Optional parameters for exit when the joint positions are reached.
         """
-        self.set_joint_pos(self._joint_pos_open, wait_time=wait_time)
+        self.set_joint_pos(
+            self._joint_pos_open,
+            wait_time=wait_time,
+            exit_on_reach=exit_on_reach,
+            exit_on_reach_kwargs=exit_on_reach_kwargs,
+        )
 
-    def close_hand(self, wait_time: float = 0.0) -> None:
+    def close_hand(
+        self,
+        wait_time: float = 0.0,
+        exit_on_reach: bool = False,
+        exit_on_reach_kwargs: dict[str, Any] | None = None,
+    ) -> None:
         """Close the hand to the predefined closed position.
 
         Args:
             wait_time: Time to wait after closing the hand.
+            exit_on_reach: If True, the function will exit when the joint positions are reached.
+            exit_on_reach_kwargs: Optional parameters for exit when the joint positions are reached.
+
         """
-        self.set_joint_pos(self._joint_pos_close, wait_time=wait_time)
+        self.set_joint_pos(
+            self._joint_pos_close,
+            wait_time=wait_time,
+            exit_on_reach=exit_on_reach,
+            exit_on_reach_kwargs=exit_on_reach_kwargs,
+        )
 
 
 class HandF5D6(Hand):
@@ -114,7 +152,12 @@ class HandF5D6(Hand):
     the F5D6 hand model.
     """
 
-    def close_hand(self, wait_time: float = 0.0) -> None:
+    def close_hand(
+        self,
+        wait_time: float = 0.0,
+        exit_on_reach: bool = False,
+        exit_on_reach_kwargs: dict[str, Any] | None = None,
+    ) -> None:
         """Close the hand fully using a two-step approach for better control."""
         if self.is_joint_pos_reached(self._joint_pos_close, tolerance=0.1):
             return
@@ -122,13 +165,28 @@ class HandF5D6(Hand):
         # First step: Move to intermediate position
         intermediate_pos = self._get_intermediate_close_position()
         first_step_wait_time = 0.8
-        self.set_joint_pos(intermediate_pos, wait_time=first_step_wait_time)
+        self.set_joint_pos(
+            intermediate_pos,
+            wait_time=first_step_wait_time,
+            exit_on_reach=exit_on_reach,
+            exit_on_reach_kwargs=exit_on_reach_kwargs,
+        )
 
         # Second step: Move to final closed position
         remaining_wait_time = max(0.0, wait_time - first_step_wait_time)
-        self.set_joint_pos(self._joint_pos_close, wait_time=remaining_wait_time)
+        self.set_joint_pos(
+            self._joint_pos_close,
+            wait_time=remaining_wait_time,
+            exit_on_reach=exit_on_reach,
+            exit_on_reach_kwargs=exit_on_reach_kwargs,
+        )
 
-    def open_hand(self, wait_time: float = 0.0) -> None:
+    def open_hand(
+        self,
+        wait_time: float = 0.0,
+        exit_on_reach: bool = False,
+        exit_on_reach_kwargs: dict[str, Any] | None = None,
+    ) -> None:
         """Open the hand fully using a two-step approach for better control."""
         if self.is_joint_pos_reached(self._joint_pos_open, tolerance=0.1):
             return
@@ -136,11 +194,21 @@ class HandF5D6(Hand):
         # First step: Move to intermediate position
         intermediate_pos = self._get_intermediate_open_position()
         first_step_wait_time = 0.3
-        self.set_joint_pos(intermediate_pos, wait_time=first_step_wait_time)
+        self.set_joint_pos(
+            intermediate_pos,
+            wait_time=first_step_wait_time,
+            exit_on_reach=exit_on_reach,
+            exit_on_reach_kwargs=exit_on_reach_kwargs,
+        )
 
         # Second step: Move to final open position
         remaining_wait_time = max(0.0, wait_time - first_step_wait_time)
-        self.set_joint_pos(self._joint_pos_open, wait_time=remaining_wait_time)
+        self.set_joint_pos(
+            self._joint_pos_open,
+            wait_time=remaining_wait_time,
+            exit_on_reach=exit_on_reach,
+            exit_on_reach_kwargs=exit_on_reach_kwargs,
+        )
 
     def _get_intermediate_close_position(self) -> np.ndarray:
         """Get intermediate position for closing hand.

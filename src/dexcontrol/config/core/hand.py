@@ -28,20 +28,9 @@ class HandConfig:
         ]
     )
 
-    # Not to modify the following varaibles unless you change a different hand
-    control_joint_names: list[str] = field(
-        default_factory=lambda: ["th_j1", "ff_j1", "mf_j1", "rf_j1", "lf_j1", "th_j0"]
-    )
-    joint_pos_open: list[float] = field(
-        default_factory=lambda: [0.1834, 0.2891, 0.2801, 0.284, 0.2811, -0.0158]
-    )
-    joint_pos_close: list[float] = field(
-        default_factory=lambda: [
-            -0.3468,
-            -1.0946,
-            -1.0844,
-            -1.0154,
-            -1.0118,
-            1.6,
-        ]
+    pose_pool: dict[str, list[float]] = field(
+        default_factory=lambda: {
+            "open": [0.1834, 0.2891, 0.2801, 0.284, 0.2811, -0.0158],
+            "close": [-0.3468, -1.0946, -1.0844, -1.0154, -1.0118, 1.6],
+        }
     )

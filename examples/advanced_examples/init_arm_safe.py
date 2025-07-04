@@ -189,7 +189,6 @@ class ArmSafeInitializer:
 
         # Get goal configuration dictionary
         goal_configuration_dict = self._create_goal_configuration(target)
-        self.bot.heartbeat.pause()
         # Initialize move to configuration task
         self.move_to_configuration_task = MoveToConfigurationTask(
             config=create_motion_manager_config(self.bot.robot_model),
@@ -214,7 +213,6 @@ class ArmSafeInitializer:
                 joint_names=joint_names,
                 duration=1.0,
             )
-        self.bot.heartbeat.resume()
         user_input = input(
             "Press Enter to run the trajectory on the real robot (or type 'abort' to cancel): "
         )

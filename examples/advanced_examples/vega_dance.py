@@ -83,6 +83,8 @@ class TrajectorySmoother:
         pos_traj = []
         vel_traj = []
         n_points = int(trajectory_dt / self.dt)
+        n_points = max(1, n_points)
+
         self.inp.current_position = waypoints[0]
 
         # Generate trajectory segments
@@ -163,10 +165,10 @@ def main(control_hz: int = 250, speed_factor: float = 2.0) -> None:
     data = np.load(data_path)
 
     # Extract joint trajectories
-    left_qs = data["left_arm"]
-    right_qs = data["right_arm"]
-    torso_qs = data["torso"]
-    head_qs = data["head"]
+    left_qs = data["left_arm"][::2]
+    right_qs = data["right_arm"][::2]
+    torso_qs = data["torso"][::2]
+    head_qs = data["head"][::2]
 
     # Move to initial positions
     bot.left_hand.close_hand()
@@ -184,6 +186,7 @@ def main(control_hz: int = 250, speed_factor: float = 2.0) -> None:
 
     input("Enter to start dancing ...")
 
+    # Initialize smoothers for each body part
     smoothers = {
         "left": TrajectorySmoother(dt=1 / desired_control_hz),
         "right": TrajectorySmoother(dt=1 / desired_control_hz),
@@ -191,29 +194,41 @@ def main(control_hz: int = 250, speed_factor: float = 2.0) -> None:
         "head": TrajectorySmoother(dt=1 / desired_control_hz, dof=3),
     }
 
-    left_smooth, _ = smoothers["left"].smooth_trajectory(
-        left_qs, 1 / desired_control_hz
-    )
-    right_smooth, _ = smoothers["right"].smooth_trajectory(
-        right_qs, 1 / desired_control_hz
-    )
-    torso_smooth, _ = smoothers["torso"].smooth_trajectory(
-        torso_qs, 1 / desired_control_hz
-    )
-    head_smooth, _ = smoothers["head"].smooth_trajectory(
-        head_qs, 1 / desired_control_hz
-    )
+    # Calculate segment duration based on speed factor
+    segment_duration = 0.00001 / speed_factor
 
-    bot.execute_trajectory(
-        trajectory=dict(
-            left_arm=left_smooth,
-            right_arm=right_smooth,
-            torso=torso_smooth,
-            head=head_smooth,
-        ),
-        control_hz=desired_control_hz,
-        relative=False,
-    )
+    logger.info(f"Starting dance sequence with {len(left_qs)} waypoints")
+    logger.info("Using smooth Ruckig trajectories to reach each goal point")
+
+    # Execute trajectory by generating smooth segments to each goal point
+    for i in range(1, len(left_qs)):  # Skip first point as we're already there
+        logger.info(f"Smooth trajectory to waypoint {i}/{len(left_qs) - 1}")
+
+        # Generate smooth trajectory segments from current to next waypoint
+        left_segment, _ = smoothers["left"].smooth_trajectory(
+            np.array([left_qs[i - 1], left_qs[i]]), segment_duration
+        )
+        right_segment, _ = smoothers["right"].smooth_trajectory(
+            np.array([right_qs[i - 1], right_qs[i]]), segment_duration
+        )
+        torso_segment, _ = smoothers["torso"].smooth_trajectory(
+            np.array([torso_qs[i - 1], torso_qs[i]]), segment_duration
+        )
+        head_segment, _ = smoothers["head"].smooth_trajectory(
+            np.array([head_qs[i - 1], head_qs[i]]), segment_duration
+        )
+
+        # Execute the smooth trajectory segment to reach this goal point
+        bot.execute_trajectory(
+            trajectory=dict(
+                left_arm=left_segment,
+                right_arm=right_segment,
+                torso=torso_segment,
+                head=head_segment,
+            ),
+            control_hz=desired_control_hz,
+            relative=False,
+        )
 
     # Finish sequence
     bot.left_hand.open_hand()

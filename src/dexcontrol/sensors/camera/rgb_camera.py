@@ -138,3 +138,39 @@ class RGBCameraSensor:
             Sensor name string.
         """
         return self._name
+
+    @property
+    def height(self) -> int:
+        """Get the height of the camera image.
+
+        Returns:
+            Height of the camera image.
+        """
+        image = self.get_obs()
+        if image is None:
+            return 0
+        return image.shape[0]
+
+    @property
+    def width(self) -> int:
+        """Get the width of the camera image.
+
+        Returns:
+            Width of the camera image.
+        """
+        image = self.get_obs()
+        if image is None:
+            return 0
+        return image.shape[1]
+
+    @property
+    def resolution(self) -> tuple[int, int]:
+        """Get the resolution of the camera image.
+
+        Returns:
+            Resolution of the camera image.
+        """
+        image = self.get_obs()
+        if image is None:
+            return 0, 0
+        return image.shape[0], image.shape[1]

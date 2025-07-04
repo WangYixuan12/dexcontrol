@@ -53,6 +53,7 @@ def unfold_robot() -> None:
                     "torso": bot.torso.get_predefined_pose(torso_pose),
                 },
                 wait_time=10.0,
+                exit_on_reach=True,
             )
 
         if not bot.torso.is_pose_reached(torso_pose):
@@ -74,6 +75,7 @@ def unfold_robot() -> None:
                     "right_arm": right_arm_pose,
                 },
                 wait_time=6.0,
+                exit_on_reach=True,
             )
 
         # Verify arms reached target position
@@ -87,7 +89,7 @@ def unfold_robot() -> None:
         head_home_pose = bot.compensate_torso_pitch(
             bot.head.get_predefined_pose("home"), "head"
         )
-        bot.head.set_joint_pos(head_home_pose, wait_time=2.0)
+        bot.head.set_joint_pos(head_home_pose, wait_time=2.0, exit_on_reach=True)
         logger.info("Robot is unfolded!")
 
 
@@ -171,6 +173,7 @@ def fold_robot(safe_motion: bool = True) -> None:
                     "right_arm": bot.right_arm.get_predefined_pose(arm_desired_pose),
                 },
                 wait_time=6.0,
+                exit_on_reach=True,
             )
 
             # Verify arms reached folded position
@@ -187,12 +190,13 @@ def fold_robot(safe_motion: bool = True) -> None:
                 "torso": bot.torso.get_predefined_pose("folded"),
             },
             wait_time=8.0,
+            exit_on_reach=True,
         )
 
         if not bot.torso.is_pose_reached("folded"):
             raise RuntimeError("Torso did not reach folded position! Exiting...")
 
-        bot.head.go_to_pose("tucked", wait_time=2.0)
+        bot.head.go_to_pose("tucked", wait_time=2.0, exit_on_reach=True)
         logger.info("Robot is folded!")
 
 

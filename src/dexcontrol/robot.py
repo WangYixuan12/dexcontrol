@@ -739,14 +739,18 @@ class Robot:
 
     def get_joint_pos_dict(
         self,
-        component: Literal["left_arm", "right_arm", "torso", "head"]
-        | list[Literal["left_arm", "right_arm", "torso", "head"]],
+        component: Literal[
+            "left_arm", "right_arm", "torso", "head", "left_hand", "right_hand"
+        ]
+        | list[
+            Literal["left_arm", "right_arm", "torso", "head", "left_hand", "right_hand"]
+        ],
     ) -> dict[str, float]:
         """Get the joint positions of one or more robot components.
 
         Args:
             component: Component name or list of component names to get joint positions for.
-                Valid components are "left_arm", "right_arm", "torso", and "head".
+                Valid components are "left_arm", "right_arm", "torso", "head", "left_hand", and "right_hand".
 
         Returns:
             Dictionary mapping joint names to joint positions.
@@ -761,6 +765,8 @@ class Robot:
             "right_arm": self.right_arm,
             "torso": self.torso,
             "head": self.head,
+            "left_hand": self.left_hand,
+            "right_hand": self.right_hand,
         }
 
         try:
@@ -826,6 +832,8 @@ class Robot:
         relative: bool = False,
         wait_time: float = 0.0,
         wait_kwargs: dict[str, Any] | None = None,
+        exit_on_reach: bool = False,
+        exit_on_reach_kwargs: dict[str, Any] | None = None,
     ) -> None:
         """Set the joint positions of the robot.
 
@@ -836,7 +844,9 @@ class Robot:
             wait_time: Time to wait for movement completion in seconds.
             wait_kwargs: Additional parameters for trajectory generation.
                 control_hz: Control frequency in Hz (default: 100).
-                max_vel: Maximum velocity for trajectory (default: 0.5).
+                max_vel: Maximum velocity for trajectory (default: 3.).
+            exit_on_reach: If True, the function will exit when the joint positions are reached.
+            exit_on_reach_kwargs: Optional parameters for exit when the joint positions are reached.
 
         Raises:
             ValueError: If any component name is invalid.
@@ -846,6 +856,7 @@ class Robot:
             wait_kwargs = {}
 
         try:
+            start_time = time.time()
             component_map = self._get_component_map()
 
             # Validate component names
@@ -871,10 +882,68 @@ class Robot:
                     relative,
                     wait_time,
                     wait_kwargs,
+                    exit_on_reach=exit_on_reach,
+                    exit_on_reach_kwargs=exit_on_reach_kwargs,
                 )
+            remaining_time = wait_time - (time.time() - start_time)
+            if remaining_time <= 0:
+                return
+
+            self._wait_for_multi_component_positions(
+                component_map,
+                pv_components,
+                joint_pos,
+                start_time,
+                wait_time,
+                exit_on_reach,
+                exit_on_reach_kwargs,
+            )
 
         except Exception as e:
             raise RuntimeError(f"Failed to set joint positions: {e}") from e
+
+    def _wait_for_multi_component_positions(
+        self,
+        component_map: dict[str, Any],
+        components: list[str],
+        joint_pos: dict[str, list[float] | np.ndarray],
+        start_time: float,
+        wait_time: float,
+        exit_on_reach: bool = False,
+        exit_on_reach_kwargs: dict[str, Any] | None = None,
+    ) -> None:
+        """Wait for multiple components to reach target positions.
+
+        Args:
+            component_map: Mapping of component names to component instances.
+            components: List of component names to check.
+            joint_pos: Target joint positions for each component.
+            start_time: Time when the operation started.
+            wait_time: Maximum time to wait.
+            exit_on_reach: If True, exit early when all positions are reached.
+            exit_on_reach_kwargs: Optional parameters for position checking.
+        """
+        sleep_interval = 0.01  # Use consistent sleep interval
+
+        if exit_on_reach:
+            if components:
+                # Set default tolerance if not provided
+                exit_on_reach_kwargs = exit_on_reach_kwargs or {}
+
+                # Wait until all positions are reached or timeout
+                while time.time() - start_time < wait_time:
+                    if all(
+                        component_map[c].is_joint_pos_reached(
+                            joint_pos[c], **exit_on_reach_kwargs
+                        )
+                        for c in components
+                    ):
+                        break
+                    time.sleep(sleep_interval)
+        else:
+            # Simple wait without position checking
+            while time.time() - start_time < wait_time:
+                time.sleep(sleep_interval)
 
     def compensate_torso_pitch(self, joint_pos: np.ndarray, part: str) -> np.ndarray:
         """Compensate for torso pitch in joint positions.
@@ -1092,6 +1161,8 @@ class Robot:
         relative: bool,
         wait_time: float,
         wait_kwargs: dict[str, Any],
+        exit_on_reach: bool = False,
+        exit_on_reach_kwargs: dict[str, Any] | None = None,
     ) -> None:
         """Set non-PV components with smooth trajectory over wait_time.
 
@@ -1102,9 +1173,11 @@ class Robot:
             relative: Whether positions are relative.
             wait_time: Time to wait for movement completion.
             wait_kwargs: Additional trajectory parameters.
+            exit_on_reach: If True, the function will exit when the joint positions are reached.
+            exit_on_reach_kwargs: Optional parameters for exit when the joint positions are reached.
         """
-        control_hz = wait_kwargs.get("control_hz", 100)
-        max_vel = wait_kwargs.get("max_vel", 0.5)
+        control_hz = wait_kwargs.get("control_hz", self.left_arm._default_control_hz)
+        max_vel = wait_kwargs.get("max_vel", self.left_arm._default_max_vel)
 
         # Generate trajectories for smooth motion during wait_time
         rate_limiter = RateLimiter(control_hz)
@@ -1136,5 +1209,12 @@ class Robot:
                 break
 
         # Wait for any remaining time
-        while time.time() - start_time < wait_time:
-            rate_limiter.sleep()
+        self._wait_for_multi_component_positions(
+            component_map,
+            non_pv_components,
+            joint_pos,
+            start_time,
+            wait_time,
+            exit_on_reach,
+            exit_on_reach_kwargs,
+        )

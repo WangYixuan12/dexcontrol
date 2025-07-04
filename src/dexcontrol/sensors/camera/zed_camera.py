@@ -356,3 +356,34 @@ class ZedCameraSensor:
             Camera info dictionary if available, None otherwise.
         """
         return self._camera_info
+
+    @property
+    def height(self) -> dict[str, int]:
+        """Get the height of the camera image.
+
+        Returns:
+            Height of the camera image.
+        """
+        images = self.get_obs()
+        return {name: image.shape[0] if image is not None else 0 for name, image in images.items()}
+
+    @property
+    def width(self) -> dict[str, int]:
+        """Get the width of the camera image.
+
+        Returns:
+            Width of the camera image.
+        """
+        images = self.get_obs()
+        return {name: image.shape[1] if image is not None else 0 for name, image in images.items()}
+
+
+    @property
+    def resolution(self) -> dict[str, tuple[int, int]]:
+        """Get the resolution of the camera image.
+
+        Returns:
+            Resolution of the camera image.
+        """
+        images = self.get_obs()
+        return {name: (image.shape[0], image.shape[1]) if image is not None else (0, 0) for name, image in images.items()}

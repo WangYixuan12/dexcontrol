@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dexcontrol"
-version = "0.2.7"
+version = "0.2.10"
 description = "A Python library of Sensing and Control for Dexmate's Robot"
 authors = [{ name = "Dexmate", email = "contact@dexmate.ai" }]
 classifiers = [
@@ -36,7 +36,7 @@ dependencies = [
     # performance enhancement for asyncio (Unix-only)
     "uvloop>=0.17.0; sys_platform != 'win32'",
 ]
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.10,<3.14"
 
 [project.optional-dependencies]
 dev = [
@@ -61,7 +61,7 @@ example = [
     "dualsense-controller>=0.3.1",
     "pytransform3d==3.13.0",
     "ruckig",
-    "dexmotion>=0.2.0",
+    "dexmotion>=0.2.1",
 ]
 
 [project.urls]
