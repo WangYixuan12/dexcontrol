@@ -8,141 +8,131 @@
 # 2. Commercial License
 #    For commercial licensing terms, contact: contact@dexmate.ai
 
-"""This example demonstrates how to retrieve and display head camera data.
+"""Example script to show head camera data live.
 
-The script initializes the robot, fetches RGB and depth images from the head
-camera, and displays them in a tiled window. It also prints the camera's
-intrinsic parameters.
+This script demonstrates how to retrieve head camera data (RGB and depth images)
+from the robot and display them live using matplotlib animation. It showcases the
+simple API for getting camera data and provides live visualization.
 """
 
-import json
-import math
-from typing import Any, Dict, List, Optional, Tuple
-
+import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 import numpy as np
 import tyro
-from loguru import logger
 
 from dexcontrol.config.vega import get_vega_config
 from dexcontrol.robot import Robot
 
 
-def display_tiled_cameras(images: List[np.ndarray], titles: List[str]) -> None:
-    """Displays multiple images in a tiled matplotlib figure.
+def get_camera_data(robot):
+    """Simple function to get camera data from robot sensors.
 
-    Args:
-        images: A list of NumPy arrays, where each array is an image.
-        titles: A list of titles corresponding to each image.
-
-    Raises:
-        ValueError: If the list of images is empty.
+    This demonstrates how easy it is to get camera data using our API.
     """
-    if not images:
-        raise ValueError("No images were provided for display.")
+    return robot.sensors.head_camera.get_obs(
+        obs_keys=["left_rgb", "right_rgb", "depth"], include_timestamp=True
+    )
 
-    num_images = len(images)
-    cols = math.ceil(math.sqrt(num_images))
-    rows = math.ceil(num_images / cols)
 
-    fig, axes = plt.subplots(rows, cols, figsize=(15, 10), squeeze=False)
-    fig.suptitle("Head Camera Feeds", fontsize=16)
+def print_camera_info(camera_info):
+    """Nicely format and print any nested dictionary."""
 
-    for i, (img, title) in enumerate(zip(images, titles)):
-        ax = axes[i // cols, i % cols]
-        if "depth" in title.lower():
-            ax.imshow(img, cmap="viridis")
-        else:
-            ax.imshow(img)
+    def print_dict(d, indent=0):
+        """Recursively print dictionary with proper indentation."""
+        for key, value in d.items():
+            # Create indentation
+            spaces = "  " * indent
+
+            if isinstance(value, dict):
+                print(f"{spaces}{key}:")
+                print_dict(value, indent + 1)
+            elif isinstance(value, (list, tuple)):
+                print(f"{spaces}{key}: {value}")
+            else:
+                print(f"{spaces}{key}: {value}")
+
+    if not camera_info:
+        print("No camera information available")
+        return
+
+    print("\n" + "=" * 50)
+    print("HEAD CAMERA INFORMATION")
+    print("=" * 50)
+    print_dict(camera_info)
+    print("=" * 50)
+    print()
+
+
+def visualize_camera_data(robot, fps: float = 30.0):
+    """Visualize camera data using matplotlib."""
+    from matplotlib import cm
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    fig.suptitle("Live Head Camera Feeds", fontsize=16)
+
+    # Setup display
+    displays = [ax.imshow(np.zeros((480, 640, 3))) for ax in axes]
+    for ax, title in zip(axes, ["Left RGB", "Right RGB", "Depth"]):
         ax.set_title(title)
         ax.axis("off")
 
-    # Hide any unused subplots
-    for i in range(num_images, rows * cols):
-        axes[i // cols, i % cols].axis("off")
-
     plt.tight_layout()
+
+    def update(frame):
+        # Get camera data - simple API call
+        camera_data = get_camera_data(robot)
+
+        # Update displays
+        titles = ["Left RGB", "Right RGB", "Depth"]
+        for i, key in enumerate(["left_rgb", "right_rgb", "depth"]):
+            if key in camera_data and camera_data[key] is not None:
+                data = camera_data[key]
+                timestamp = None
+
+                if isinstance(data, tuple):
+                    img = data[0]  # Extract image from tuple
+                    timestamp = data[1]
+                else:
+                    img = data
+
+                # Update title with timestamp if available
+                if timestamp is not None:
+                    axes[i].set_title(f"{titles[i]}\n{img.shape}\n{timestamp} (ns)")
+                else:
+                    axes[i].set_title(f"{titles[i]}\n{img.shape}")
+
+                # Process depth image for visualization
+                if "depth" in key:
+                    # Normalize depth to 0-255
+                    img = (
+                        (img - img.min()) / (img.max() - img.min() + 1e-8) * 255
+                    ).astype(np.uint8)
+                    # Apply colormap
+                    img = (cm.viridis(img / 255.0)[:, :, :3] * 255).astype(np.uint8)
+
+                displays[i].set_array(img)
+
+    # Start animation
+    _ = animation.FuncAnimation(fig, update, interval=int(1000 / fps), blit=False)
     plt.show()
 
 
-def print_camera_info(camera_info: Optional[Dict[str, Any]]) -> None:
-    """Prints camera information in a formatted JSON block.
+def main(fps: float = 30.0) -> None:
+    """Main function to initialize robot and display camera feeds.
 
     Args:
-        camera_info: A dictionary containing camera metadata, or None.
+        fps: Display refresh rate in Hz (default: 30.0)
     """
-    if camera_info:
-        print("\n" + "=" * 50)
-        print("CAMERA INFORMATION")
-        print("=" * 50)
-        print(json.dumps(camera_info, indent=2))
-        print("=" * 50 + "\n")
-    else:
-        logger.warning("No camera info available.")
-
-
-def extract_camera_data(
-    camera_data: Dict[str, Optional[np.ndarray]],
-) -> Tuple[List[np.ndarray], List[str]]:
-    """Extracts valid images and their titles from the camera data dictionary.
-
-    Args:
-        camera_data: A dictionary where keys are stream identifiers (e.g.,
-            'left_rgb') and values are either a NumPy array (the image) or
-            None.
-
-    Returns:
-        A tuple containing two lists: one for valid images and one for their
-        corresponding titles.
-
-    Raises:
-        ValueError: If no valid images are found in the camera data.
-    """
-    images, titles = [], []
-    for key, data in camera_data.items():
-        if data is not None:
-            images.append(data)
-            titles.append(key.replace("_", " ").title())
-            logger.info(f"Retrieved '{key}' with shape: {data.shape}")
-
-    if not images:
-        raise ValueError("No valid camera images were retrieved.")
-
-    return images, titles
-
-
-def main() -> None:
-    """Initializes the robot, retrieves head camera data, and displays it."""
     configs = get_vega_config()
     configs.sensors.head_camera.enable = True
-    robot = Robot(configs=configs)
 
-    try:
-        # Print camera intrinsics and other metadata.
-        print_camera_info(robot.sensors.head_camera.camera_info)
+    with Robot(configs=configs) as robot:
+        # Print camera information nicely
+        camera_info = robot.sensors.head_camera.camera_info
+        print_camera_info(camera_info)
 
-        # Retrieve all available observations from the head camera.
-        obs_keys = ["left_rgb", "right_rgb", "depth"]
-        camera_data = robot.sensors.head_camera.get_obs(obs_keys=obs_keys)
-
-        if not camera_data:
-            logger.error("Failed to retrieve camera data.")
-            return
-
-        # Extract images and titles from the raw data.
-        images, titles = extract_camera_data(camera_data)
-
-        # Display the camera feeds in a single window.
-        logger.info(f"Displaying {len(images)} head camera feeds...")
-        display_tiled_cameras(images, titles)
-
-    except ValueError as e:
-        logger.error(f"Error processing camera data: {e}")
-    except Exception as e:
-        logger.error(f"An unexpected error occurred: {e}", exc_info=True)
-    finally:
-        logger.info("Shutting down the robot.")
-        robot.shutdown()
+        # Start live camera visualization
+        visualize_camera_data(robot, fps)
 
 
 if __name__ == "__main__":

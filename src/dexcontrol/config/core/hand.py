@@ -31,6 +31,6 @@ class HandConfig:
     pose_pool: dict[str, list[float]] = field(
         default_factory=lambda: {
             "open": [0.1834, 0.2891, 0.2801, 0.284, 0.2811, -0.0158],
-            "close": [-0.3468, -1.0946, -1.0844, -1.0154, -1.0118, 1.6],
+            "close": [-0.2668, -1.0946, -1.0844, -1.0154, -1.0118, 1.6],
         }
     )

@@ -19,7 +19,7 @@ class ZedCameraConfig:
         _target_: The target class to instantiate.
         name: A unique name for the sensor instance.
         enable: Whether the sensor is enabled.
-        use_rtc: If True, RGB streams use the high-performance RTCSubscriber.
+        use_rtc: If True, RGB streams use the RTCSubscriber.
                  If False, they use the standard RGBCameraSubscriber. Depth
                  always uses a standard Zenoh subscriber.
         enable_fps_tracking: If True, tracks and logs the FPS of all streams.
@@ -31,7 +31,7 @@ class ZedCameraConfig:
     _target_: str = "dexcontrol.sensors.camera.zed_camera.ZedCameraSensor"
     name: str = "zed_camera"
     enable: bool = False
-    use_rtc: bool = True
+    use_rtc: bool = False
     enable_fps_tracking: bool = False
     fps_log_interval: int = 30
 

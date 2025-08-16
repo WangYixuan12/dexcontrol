@@ -14,13 +14,13 @@ Visualizes joint currents of robot arms using matplotlib. Supports plotting eith
 or both arms and allows selecting specific joints to monitor.
 """
 
-import argparse
 import time
 from collections import deque
 from typing import Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
+import tyro
 from matplotlib.animation import FuncAnimation
 from matplotlib.lines import Line2D
 
@@ -49,6 +49,7 @@ class CurrentPlotter:
         left_lines: Plot lines for left arm
         right_lines: Plot lines for right arm
         start_time: Start time of plotting
+        absolute: Whether to plot absolute values of current
     """
 
     def __init__(
@@ -57,6 +58,7 @@ class CurrentPlotter:
         plot_right: bool = True,
         max_points: int = 100,
         joints: Sequence[int] | None = None,
+        absolute: bool = False,
     ) -> None:
         """Initialize the current plotter.
 
@@ -65,6 +67,7 @@ class CurrentPlotter:
             plot_right: Whether to plot right arm currents
             max_points: Maximum number of points in history
             joints: Joint indices to plot (0-based). If None, plots all joints
+            absolute: Whether to plot absolute values of current
         """
         self.bot = Robot()
         self.max_points = max_points
@@ -72,6 +75,7 @@ class CurrentPlotter:
         self.plot_left = plot_left
         self.plot_right = plot_right
         self.joints = range(7) if joints is None else joints
+        self.absolute = absolute
 
         # Initialize data storage
         self.left_currents = (
@@ -160,7 +164,10 @@ class CurrentPlotter:
         if self.plot_left:
             left_current = self.bot.left_arm.get_joint_current()
             for i, joint_idx in enumerate(self.joints):
-                self.left_currents[joint_idx].append(left_current[joint_idx])
+                val = left_current[joint_idx]
+                if self.absolute:
+                    val = abs(val)
+                self.left_currents[joint_idx].append(val)
                 self.left_lines[i].set_data(
                     shifted_times, list(self.left_currents[joint_idx])
                 )
@@ -168,7 +175,10 @@ class CurrentPlotter:
         if self.plot_right:
             right_current = self.bot.right_arm.get_joint_current()
             for i, joint_idx in enumerate(self.joints):
-                self.right_currents[joint_idx].append(right_current[joint_idx])
+                val = right_current[joint_idx]
+                if self.absolute:
+                    val = abs(val)
+                self.right_currents[joint_idx].append(val)
                 self.right_lines[i].set_data(
                     shifted_times, list(self.right_currents[joint_idx])
                 )
@@ -181,45 +191,28 @@ class CurrentPlotter:
         return self.left_lines + self.right_lines
 
 
-def parse_args() -> argparse.Namespace:
-    """Parse command line arguments.
-
-    Returns:
-        Parsed command line arguments
-    """
-    parser = argparse.ArgumentParser(description="Plot robot arm joint currents.")
-    parser.add_argument("--left", action="store_true", help="Plot left arm currents")
-    parser.add_argument("--right", action="store_true", help="Plot right arm currents")
-    parser.add_argument(
-        "--joints",
-        type=int,
-        nargs="+",
-        help="Joint indices to plot (1-7). If not specified, plots all joints",
-    )
-    parser.add_argument("--robot_model", type=str, default="vega-1", help="Robot name")
-    args = parser.parse_args()
-
-    # Default to plotting both arms if none specified
-    if not args.left and not args.right:
-        args.left = args.right = True
-
+def main(
+    left: bool = True,
+    right: bool = True,
+    joints: list[int] | None = None,
+    absolute: bool = True,
+) -> None:
+    """Run the current plotting visualization."""
     # Validate and convert joint indices to 0-based
-    if args.joints:
-        invalid_joints = [j for j in args.joints if not 1 <= j <= 7]
+    if joints:
+        invalid_joints = [j for j in joints if not 1 <= j <= 7]
         if invalid_joints:
-            parser.error(
+            raise ValueError(
                 f"Invalid joint indices: {invalid_joints}. Must be between 1 and 7."
             )
-        args.joints = [j - 1 for j in args.joints]
+        joints = [j - 1 for j in joints]
 
-    return args
+    # Default to plotting both arms if none specified
+    if not left and not right:
+        left = right = True
 
-
-def main() -> None:
-    """Run the current plotting visualization."""
-    args = parse_args()
     plotter = CurrentPlotter(
-        plot_left=args.left, plot_right=args.right, joints=args.joints
+        plot_left=left, plot_right=right, joints=joints, absolute=absolute
     )
     plotter.create_legends()
 
@@ -240,4 +233,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    tyro.cli(main)

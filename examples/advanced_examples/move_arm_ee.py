@@ -16,7 +16,6 @@ relative to their current pose.
 
 import numpy as np
 import tyro
-from configs.vega_config import ManagerConfigDict
 from dexmotion.tasks.move_to_relative_pose_task import MoveToRelativePoseTask
 from dexmotion.utils import robot_utils
 from loguru import logger
@@ -55,7 +54,6 @@ def main() -> None:
     # Create task instance with initial joint configuration
     move_to_relative_pose_task = MoveToRelativePoseTask(
         initial_joint_configuration=initial_joint_pos,
-        config=ManagerConfigDict[bot.robot_model](),
     )
     if move_to_relative_pose_task.motion_manager is None:
         raise ValueError("Motion manager is None")
@@ -67,8 +65,8 @@ def main() -> None:
     # Run the task and get trajectory data
     ts_sample, qs_sample, qds_sample, qdds_sample, duration = (
         move_to_relative_pose_task.run(
-            start_configuration_dict,
             relative_poses_dict,
+            start_configuration_dict,
             control_frequency=control_hz,
             planner_type="interpolation_planner",
             generate_trajectory=True,
@@ -87,7 +85,7 @@ def main() -> None:
         robot_utils.get_joint_names(
             move_to_relative_pose_task.motion_manager.pin_robot
         ),
-        duration=duration if duration is not None else 0.0,
+        duration=duration if duration is not None else 1.0,
     )
 
     logger.info(f"Final configuration: {qs_sample[-1]}")
@@ -96,9 +94,9 @@ def main() -> None:
 
     # Extract arm trajectories and execute on the robot
     trajectory = {"left_arm": qs_sample[:, :7], "right_arm": qs_sample[:, 7:14]}
-    bot.execute_trajectory(trajectory, control_hz=control_hz, relative=False)
+    bot.execute_trajectory(trajectory, control_hz=control_hz, relative=False)  # type: ignore
 
-    move_to_relative_pose_task.motion_manager.set_qpos(qs_sample[-1])
+    move_to_relative_pose_task.motion_manager.set_joint_pos(qs_sample[-1])
     move_to_relative_pose_task.motion_manager.visualizer.clear_motion_plan()
 
 

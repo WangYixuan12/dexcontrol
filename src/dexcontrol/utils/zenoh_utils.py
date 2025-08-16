@@ -17,6 +17,7 @@ communication framework.
 import json
 import time
 
+import numpy as np
 import zenoh
 from loguru import logger
 
@@ -81,3 +82,41 @@ def query_zenoh_json(
                 logger.error(f"Query failed after {max_retries + 1} attempts: {e}")
 
     return None
+
+
+def compute_ntp_stats(offsets: list[float], rtts: list[float]) -> dict[str, float]:
+    """Compute NTP statistics, removing outliers based on RTT median and std.
+
+    Args:
+        offsets: List of offset values (seconds).
+        rtts: List of round-trip time values (seconds).
+
+    Returns:
+        Dictionary with computed statistics (mean, std, min, max, sample_count) for offset and rtt.
+    """
+    offsets_np = np.array(offsets)
+    rtts_np = np.array(rtts)
+    if len(rtts_np) < 3:
+        mask = np.ones_like(rtts_np, dtype=bool)
+    else:
+        median = np.median(rtts_np)
+        std = np.std(rtts_np)
+        mask = np.abs(rtts_np - median) <= 2 * std
+    offsets_filtered = offsets_np[mask]
+    rtts_filtered = rtts_np[mask]
+
+    def safe_stat(arr, func):
+        return float(func(arr)) if len(arr) > 0 else 0.0
+
+    stats = {
+        "offset (mean)": safe_stat(offsets_filtered, np.mean),
+        "offset (std)": safe_stat(offsets_filtered, np.std),
+        "offset (min)": safe_stat(offsets_filtered, np.min),
+        "offset (max)": safe_stat(offsets_filtered, np.max),
+        "round_trip_time (mean)": safe_stat(rtts_filtered, np.mean),
+        "round_trip_time (std)": safe_stat(rtts_filtered, np.std),
+        "round_trip_time (min)": safe_stat(rtts_filtered, np.min),
+        "round_trip_time (max)": safe_stat(rtts_filtered, np.max),
+        "sample_count": int(len(offsets_filtered)),
+    }
+    return stats

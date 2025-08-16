@@ -20,3 +20,6 @@ COMM_CFG_PATH_ENV_VAR: Final[str] = "DEXMATE_COMM_CFG_PATH"
 
 # Environment variable to disable heartbeat monitoring
 DISABLE_HEARTBEAT_ENV_VAR: Final[str] = "DEXCONTROL_DISABLE_HEARTBEAT"
+
+# Environment variable to disable estop checking
+DISABLE_ESTOP_CHECKING_ENV_VAR: Final[str] = "DEXCONTROL_DISABLE_ESTOP_CHECKING"

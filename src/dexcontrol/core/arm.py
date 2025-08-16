@@ -58,6 +58,12 @@ class Arm(RobotJointComponent):
             state_message_type=dexcontrol_msg_pb2.ArmState,
             zenoh_session=zenoh_session,
             joint_name=configs.joint_name,
+            joint_limit=configs.joint_limit
+            if hasattr(configs, "joint_limit")
+            else None,
+            joint_vel_limit=configs.joint_vel_limit
+            if hasattr(configs, "joint_vel_limit")
+            else None,
             pose_pool=configs.pose_pool,
         )
 
@@ -72,14 +78,21 @@ class Arm(RobotJointComponent):
                 configs.wrench_sub_topic, zenoh_session
             )
 
-        self._default_max_vel = configs.default_max_vel
-        self._default_control_hz = configs.default_control_hz
-        if self._default_max_vel > 3.0:
-            logger.warning(
-                f"Max velocity is set to {self._default_max_vel}, which is greater than 3.0. This is not recommended."
+        # Initialize end effector pass through publisher
+        self._ee_pass_through_publisher: Final[zenoh.Publisher] = (
+            zenoh_session.declare_publisher(
+                resolve_key_name(configs.ee_pass_through_pub_topic)
             )
-            self._default_max_vel = 3.0
-            logger.warning("Max velocity is clamped to 3.0")
+        )
+
+        self._default_control_hz = configs.default_control_hz
+        if self._joint_vel_limit is not None:
+            if np.any(self._joint_vel_limit > 2.8):
+                logger.warning(
+                    "Joint velocity limit is greater than 2.8. This is not recommended."
+                )
+                self._joint_vel_limit = np.clip(self._joint_vel_limit, 0, 2.8)
+                logger.warning("Joint velocity limit is clamped to 2.8")
 
     def set_mode(self, mode: Literal["position", "disable"]) -> None:
         """Sets the operating mode of the arm.
@@ -137,6 +150,13 @@ class Arm(RobotJointComponent):
                 immediately. If wait_time is greater than 0, the joint positions will
                 be interpolated between the current position and the target position,
                 and the function will wait for the specified time between each movement.
+
+                **IMPORTANT: When wait_time is 0, you MUST call this function repeatedly
+                in a high-frequency loop (e.g., 100 Hz). DO NOT call it just once!**
+                The function is designed for continuous control when wait_time=0.
+                The highest frequency that the user can call this function is 500 Hz.
+
+
             wait_kwargs: Keyword arguments for the interpolation (only used if
                 wait_time > 0). Supported keys:
                 - control_hz: Control frequency in Hz (default: 100).
@@ -152,6 +172,11 @@ class Arm(RobotJointComponent):
         resolved_joint_pos = (
             self._resolve_relative_joint_cmd(joint_pos) if relative else joint_pos
         )
+        resolved_joint_pos = self._convert_joint_cmd_to_array(resolved_joint_pos)
+        if self._joint_limit is not None:
+            resolved_joint_pos = np.clip(
+                resolved_joint_pos, self._joint_limit[:, 0], self._joint_limit[:, 1]
+            )
 
         if wait_time > 0.0:
             self._execute_trajectory_motion(
@@ -162,16 +187,11 @@ class Arm(RobotJointComponent):
                 exit_on_reach_kwargs,
             )
         else:
-            # Convert to array format
-            if isinstance(resolved_joint_pos, (list, dict)):
-                resolved_joint_pos = self._convert_joint_cmd_to_array(
-                    resolved_joint_pos
-                )
             self._send_position_command(resolved_joint_pos)
 
     def _execute_trajectory_motion(
         self,
-        joint_pos: Float[np.ndarray, " N"] | list[float] | dict[str, float],
+        target_joint_pos: Float[np.ndarray, " N"],
         wait_time: float,
         wait_kwargs: dict[str, float],
         exit_on_reach: bool = False,
@@ -180,7 +200,7 @@ class Arm(RobotJointComponent):
         """Execute trajectory-based motion to target position.
 
         Args:
-            joint_pos: Target joint positions as list, numpy array, or dictionary.
+            target_joint_pos: Target joint positions as numpy array.
             wait_time: Total time for the motion.
             wait_kwargs: Parameters for trajectory generation.
             exit_on_reach: If True, the function will exit when the joint positions are reached.
@@ -188,7 +208,11 @@ class Arm(RobotJointComponent):
         """
         # Set default parameters
         control_hz = wait_kwargs.get("control_hz", self._default_control_hz)
-        max_vel = wait_kwargs.get("max_vel", self._default_max_vel)
+        max_vel = wait_kwargs.get("max_vel")
+        if max_vel is None:
+            max_vel = (
+                self._joint_vel_limit if self._joint_vel_limit is not None else 2.8
+            )
         exit_on_reach_kwargs = exit_on_reach_kwargs or {}
         exit_on_reach_kwargs.setdefault("tolerance", 0.05)
 
@@ -196,19 +220,9 @@ class Arm(RobotJointComponent):
         rate_limiter = RateLimiter(control_hz)
         current_joint_pos = self.get_joint_pos().copy()
 
-        # Convert input to numpy array for trajectory generation
-        if isinstance(joint_pos, (list, dict)):
-            target_pos = (
-                self._convert_dict_to_array(joint_pos)
-                if isinstance(joint_pos, dict)
-                else np.array(joint_pos, dtype=np.float32)
-            )
-        else:
-            target_pos = joint_pos
-
         # Generate trajectory using utility function
         trajectory, _ = generate_linear_trajectory(
-            current_joint_pos, target_pos, max_vel, control_hz
+            current_joint_pos, target_joint_pos, max_vel, control_hz
         )
         # Execute trajectory with time limit
         start_time = time.time()
@@ -220,10 +234,10 @@ class Arm(RobotJointComponent):
 
         # Hold final position for remaining time
         while time.time() - start_time < wait_time:
-            self._send_position_command(target_pos)
+            self._send_position_command(target_joint_pos)
             rate_limiter.sleep()
             if exit_on_reach and self.is_joint_pos_reached(
-                target_pos, **exit_on_reach_kwargs
+                target_joint_pos, **exit_on_reach_kwargs
             ):
                 break
 
@@ -235,6 +249,16 @@ class Arm(RobotJointComponent):
     ) -> None:
         """Controls the arm in joint position mode with a velocity feedforward term.
 
+        Warning:
+            The joint_vel parameter should be well-planned (such as from a trajectory planner).
+            Sending poorly planned or inappropriate joint velocity commands can cause the robot
+            to behave unexpectedly or potentially get damaged. Ensure velocity commands are
+            smooth, within safe limits, and properly coordinated across all joints.
+
+            Additionally, this command MUST be called at high frequency (e.g., 100Hz) to take
+            effect properly. DO NOT call this function just once or at low frequency, as this
+            can lead to unpredictable robot behavior.
+
         Args:
             joint_pos: Joint positions as either:
                 - List of joint values [j1, j2, ..., j7]
@@ -244,6 +268,7 @@ class Arm(RobotJointComponent):
                 - List of joint values [v1, v2, ..., v7]
                 - Numpy array with shape (7,), in radians/sec
                 - Dictionary of joint names and velocity values
+
             relative: If True, the joint positions are relative to the current position.
 
         Raises:
@@ -252,25 +277,15 @@ class Arm(RobotJointComponent):
         resolved_joint_pos = (
             self._resolve_relative_joint_cmd(joint_pos) if relative else joint_pos
         )
-
-        # Convert inputs to numpy arrays
-        if isinstance(resolved_joint_pos, (list, dict)):
-            target_pos = (
-                self._convert_dict_to_array(resolved_joint_pos)
-                if isinstance(resolved_joint_pos, dict)
-                else np.array(resolved_joint_pos, dtype=np.float32)
+        resolved_joint_pos = self._convert_joint_cmd_to_array(resolved_joint_pos)
+        if self._joint_limit is not None:
+            resolved_joint_pos = np.clip(
+                resolved_joint_pos, self._joint_limit[:, 0], self._joint_limit[:, 1]
             )
-        else:
-            target_pos = resolved_joint_pos
-
-        if isinstance(joint_vel, (list, dict)):
-            target_vel = (
-                self._convert_dict_to_array(joint_vel)
-                if isinstance(joint_vel, dict)
-                else np.array(joint_vel, dtype=np.float32)
-            )
-        else:
-            target_vel = joint_vel
+        target_pos = resolved_joint_pos
+        target_vel = self._convert_joint_cmd_to_array(
+            joint_vel, clip_value=self._joint_vel_limit
+        )
 
         control_msg = dexcontrol_msg_pb2.ArmCommand(
             command_type=dexcontrol_msg_pb2.ArmCommand.CommandType.VELOCITY_FEEDFORWARD,
@@ -295,6 +310,16 @@ class Arm(RobotJointComponent):
 
         if self.wrench_sensor:
             self.wrench_sensor.shutdown()
+
+    def send_ee_pass_through_message(self, message: bytes):
+        """Send an end effector pass through message to the robot arm.
+
+        Args:
+            message: The message to send to the robot arm.
+        """
+        control_msg = dexcontrol_msg_pb2.EndEffectorPassThroughCommand(data=message)
+        control_data = control_msg.SerializeToString()
+        self._ee_pass_through_publisher.put(control_data)
 
 
 class ArmWrenchSensor(RobotComponent):

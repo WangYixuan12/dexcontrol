@@ -21,10 +21,8 @@ from typing import Literal
 
 import numpy as np
 import tyro
-from dexmotion.configs import create_motion_manager_config
-from dexmotion.core.motion_manager import MotionManager
-from dexmotion.ik.local_ik import LocalPinkIKSolver
-from dexmotion.utils import robot_utils
+from dexmotion.ik import LocalPinkIKSolver
+from dexmotion.motion_manager import MotionManager
 from loguru import logger
 from pytransform3d import rotations
 from pytransform3d import transformations as pt
@@ -57,7 +55,7 @@ class AdmittanceController:
         """
         self.is_zero_force_control = zero_force_control
         self.K = np.diag([500.0, 500.0, 500.0, 20.0, 20.0, 10.0]) * kd_gain
-        self.D = np.diag([50.0, 50.0, 50.0, 20.0, 20.0, 20.0]) * kd_gain
+        self.D = np.diag([5.0, 5.0, 5.0, 0.05, 0.05, 0.05]) * kd_gain
         self.dt = dt
         if zero_force_control:
             self.K = self.K / 5
@@ -85,7 +83,7 @@ class AdmittanceController:
             virtual_wrench = self.K @ self._compute_pose_dist(pose_des, pose_cur)
 
         virtual_wrench += wrench_ext
-        correction_motion = np.linalg.inv(self.K) @ virtual_wrench
+        correction_motion = np.linalg.inv(self.D) @ virtual_wrench * self.dt
         corrected_pose = self._apply_correction(pose_cur, correction_motion)
         return corrected_pose
 
@@ -179,15 +177,9 @@ def _initialize_robot_and_motion_manager(
         component=["left_arm", "right_arm", "torso", "head"]
     )
 
-    config = create_motion_manager_config(bot.robot_model)
-    motion_manager = MotionManager(config=config)
-    motion_manager.setup(
-        initialize_robot=True,
-        initialize_local_ik=True,
-        initialize_visualizer=False,
+    motion_manager = MotionManager(
+        init_visualizer=False,
         initial_joint_configuration_dict=qpos_dict,
-        apply_initial_joint_configuration=True,
-        apply_locked_joints=True,
     )
 
     if motion_manager.pin_robot is None:
@@ -209,17 +201,14 @@ def _get_initial_ee_poses(motion_manager: MotionManager) -> dict[str, np.ndarray
     Returns:
         Dictionary mapping arm names to initial poses.
     """
-    robot_wrapper = motion_manager.pin_robot
-    assert robot_wrapper is not None
-    fk_result = robot_utils.compute_fk(
-        robot_wrapper,
-        motion_manager.get_joint_pos(),
-        motion_manager.target_frames,
+    fk_result = motion_manager.fk(
+        frame_names=motion_manager.target_frames,
+        qpos=motion_manager.get_joint_pos(),
     )
 
     return {
-        "left": fk_result["L_ee"].np,
-        "right": fk_result["R_ee"].np,
+        "left": fk_result["L_ee"].np,  # type: ignore
+        "right": fk_result["R_ee"].np,  # type: ignore
     }
 
 
@@ -295,7 +284,7 @@ def _send_joint_commands(
 def main(
     zero_force: bool = True,
     kd_gain: float = 1.0,
-    need_button: bool = True,
+    need_button: bool = False,
 ) -> None:
     """Main function for admittance control demo.
 
@@ -368,18 +357,17 @@ def main(
 
             if activated:
                 # Update motion manager with current joint positions
-                motion_manager.set_qpos(
+                motion_manager.set_joint_pos(
                     bot.get_joint_pos_dict(component=["left_arm", "right_arm"])
                 )
 
                 # Compute current end-effector poses
-                ee_pose_result = robot_utils.compute_fk(
-                    pin_robot,
-                    motion_manager.get_joint_pos(),
-                    motion_manager.target_frames,
+                ee_pose_result = motion_manager.fk(
+                    frame_names=motion_manager.target_frames,
+                    qpos=motion_manager.get_joint_pos(),
                 )
                 ee_pose: dict[str, np.ndarray] = {
-                    arm: ee_pose_result[arm_ee_name[arm]].np
+                    arm: ee_pose_result[arm_ee_name[arm]].np  # type: ignore
                     for arm in ("left", "right")
                 }
 
@@ -395,7 +383,7 @@ def main(
 
                 # Solve inverse kinematics
                 target_qpos_dict = ik_solver.solve_ik(
-                    target_poses_dict={
+                    target_pose_dict={
                         "L_ee": ee_pose["left"],
                         "R_ee": ee_pose["right"],
                     },

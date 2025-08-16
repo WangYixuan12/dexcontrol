@@ -52,6 +52,7 @@ class VegaConfig:
                 "folded": [1.57079, 0.0, 0, -3.1, 0, 0, -0.69813],
                 "folded_closed_hand": [1.57079, 0.0, 0, -3.1, 0, 0, -0.9],
                 "L_shape": [0.064, -0.3, 0.0, -1.556, 1.271, 0.0, 0.0],
+                "lift_up": [0.064, -0.3, 0.0, -2.756, 1.271, 0.0, 0.0],
                 "zero": [-1.57079, 0.0, 0, 0.0, 0, 0, 0.0],
             },
         )
@@ -67,6 +68,7 @@ class VegaConfig:
                 "folded": [-1.57079, 0.0, 0, -3.1, 0, 0, 0.69813],
                 "folded_closed_hand": [-1.57079, 0.0, 0, -3.1, 0, 0, 0.9],
                 "L_shape": [-0.064, 0.3, 0.0, -1.556, -1.271, 0.0, 0.0],
+                "lift_up": [-0.064, 0.3, 0.0, -2.756, -1.271, 0.0, 0.0],
                 "zero": [1.57079, 0.0, 0, 0.0, 0, 0, 0.0],
             },
         )
@@ -114,6 +116,7 @@ class VegaConfig:
     reboot_query_name: str = "system/reboot"
     clear_error_query_name: str = "system/clear_error"
     led_query_name: str = "system/led"
+    soc_ntp_query_name: str = "time/soc"
 
     @classmethod
     def register_variant(
@@ -138,11 +141,22 @@ class Vega1Config(VegaConfig):
             control_pub_topic="control/arm/left",
             set_mode_query="mode/arm/left",
             wrench_sub_topic="state/wrench/left",
+            ee_pass_through_pub_topic="control/ee_pass_through/left",
             joint_name=[f"L_arm_j{i + 1}" for i in range(7)],
+            joint_limit=[
+                [-3.071, 3.071],
+                [-0.453, 1.553],
+                [-3.071, 3.071],
+                [-3.071, 0.244],
+                [-3.071, 3.071],
+                [-1.396, 1.396],
+                [-1.378, 1.117],
+            ],
             pose_pool={
                 "folded": [1.57079, 0.0, 0, -3.1, 0, 0, -0.69813],
                 "folded_closed_hand": [1.57079, 0.0, 0, -3.1, 0, 0, -0.9],
                 "L_shape": [0.064, 0.3, 0.0, -1.556, 1.271, 0.0, 0.0],
+                "lift_up": [0.064, 0.3, 0.0, -2.756, 1.271, 0.0, 0.0],
                 "zero": [-1.57079, 0.0, 0, 0.0, 0, 0, 0.0],
             },
         )
@@ -153,11 +167,22 @@ class Vega1Config(VegaConfig):
             control_pub_topic="control/arm/right",
             set_mode_query="mode/arm/right",
             wrench_sub_topic="state/wrench/right",
+            ee_pass_through_pub_topic="control/ee_pass_through/right",
             joint_name=[f"R_arm_j{i + 1}" for i in range(7)],
+            joint_limit=[
+                [-3.071, 3.071],
+                [-1.553, 0.453],
+                [-3.071, 3.071],
+                [-3.071, 0.244],
+                [-3.071, 3.071],
+                [-1.396, 1.396],
+                [-1.117, 1.378],
+            ],
             pose_pool={
                 "folded": [-1.57079, 0.0, 0, -3.1, 0, 0, 0.69813],
                 "folded_closed_hand": [-1.57079, 0.0, 0, -3.1, 0, 0, 0.9],
                 "L_shape": [-0.064, -0.3, 0.0, -1.556, -1.271, 0.0, 0.0],
+                "lift_up": [-0.064, -0.3, 0.0, -2.756, -1.271, 0.0, 0.0],
                 "zero": [1.57079, 0.0, 0, 0.0, 0, 0, 0.0],
             },
         )
@@ -169,8 +194,11 @@ class Vega1Config(VegaConfig):
     )
     head: HeadConfig = field(
         default_factory=lambda: HeadConfig(
-            joint_limit_lower=[-1.483, -2.792, -1.378],
-            joint_limit_upper=[1.483, 2.792, 1.483],
+            joint_limit=[
+                [-1.483, 1.483],
+                [-2.792, 2.792],
+                [-1.378, 1.378],
+            ],
         )
     )
 

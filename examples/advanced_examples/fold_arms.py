@@ -27,15 +27,46 @@ def main(comp_pitch: bool = False) -> None:
     Args:
         comp_pitch: Whether to compensate for torso pitch angle.
     """
-    # Safety confirmation
+    # CRITICAL SAFETY CONFIRMATION - DOUBLE PROMPT
+    logger.warning("[bold red]⚠️  CRITICAL SAFETY WARNING ⚠️[/]")
+    logger.warning("[bold red]THIS SCRIPT DOES NOT CHECK FOR SELF-COLLISIONS![/]")
     logger.warning(
-        "Warning: Be ready to press e-stop if needed! "
-        "This example does not check for self-collisions. "
-        "Highly recommend to first run init_arm_safe.py to make sure the arms start from a safe pose."
+        "[bold red]The robot arms may collide with each other or the robot body![/]"
     )
-    logger.warning("Please ensure the arms have sufficient space to move.")
-    if input("Continue? [y/N]: ").lower() != "y":
+    logger.warning(
+        "[bold red]Have your emergency stop (e-stop) button ready at ALL times![/]"
+    )
+    logger.warning(
+        "[yellow]Highly recommend running init_arm_safe.py first to ensure safe starting pose.[/]"
+    )
+    logger.warning(
+        "[yellow]Ensure the arms have sufficient space to move without obstruction.[/]"
+    )
+
+    # First confirmation
+    first_confirm = input(
+        "Do you understand the collision risks and have e-stop ready? [y/N]: "
+    ).lower()
+    if first_confirm != "y":
+        logger.info("[green]Operation cancelled for safety.[/]")
         return
+
+    # Second confirmation - more explicit
+    logger.warning("[bold red]⚠️  FINAL SAFETY CHECK ⚠️[/]")
+    logger.warning(
+        "[bold red]You are about to move robot arms WITHOUT collision detection![/]"
+    )
+    logger.warning(
+        "[bold red]Arms may collide with robot body, each other, or obstacles![/]"
+    )
+    second_confirm = input(
+        "Type 'PROCEED' (all caps) to continue or anything else to cancel: "
+    )
+    if second_confirm != "PROCEED":
+        logger.info("[green]Operation cancelled. Safety first![/]")
+        return
+
+    logger.warning("[bold magenta]Proceeding with arm movement - KEEP E-STOP READY![/]")
 
     target_pose = "folded"
 
@@ -63,6 +94,7 @@ def main(comp_pitch: bool = False) -> None:
                     "right_arm": right_arm_target_pose,
                 },
                 wait_time=5.0,
+                exit_on_reach=True,
             )
         else:
             # Move both arms to folded position without pitch compensation
@@ -72,6 +104,7 @@ def main(comp_pitch: bool = False) -> None:
                     "right_arm": bot.right_arm.get_predefined_pose(target_pose),
                 },
                 wait_time=5.0,
+                exit_on_reach=True,
             )
 
         logger.info("Arms successfully moved to folded position")

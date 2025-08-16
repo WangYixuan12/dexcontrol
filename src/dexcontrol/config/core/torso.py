@@ -20,10 +20,14 @@ class TorsoConfig:
     joint_name: list[str] = field(
         default_factory=lambda: ["torso_j1", "torso_j2", "torso_j3"]
     )
-    default_vel: float = 0.4  # rad/s, will be used if joint_vel is not provided
-    max_vel: float = 0.6  # max velocity of torso joint, will be used to clip
-    # the joint_vel, Highly recommended to set this value
-    # not higher than 0.6 rad/s
+    joint_limit: list[list[float]] = field(
+        default_factory=lambda: [
+            [0, 1.570],
+            [0, 3.141],
+            [-1.570, 1.570],
+        ]
+    )
+    joint_vel_limit: list[float] = field(default_factory=lambda: [0.6, 0.6, 0.6])
     pose_pool: dict[str, list[float]] = field(
         default_factory=lambda: {
             "home": [0.0, 0.0, 0.0],

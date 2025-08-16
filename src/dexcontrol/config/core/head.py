@@ -21,15 +21,14 @@ class HeadConfig:
         default_factory=lambda: ["head_j1", "head_j2", "head_j3"]
     )
     dof: int = 3
-    # Use the following varaibles if you are using vega-rc2
-    joint_limit_lower: list[float] = field(
-        default_factory=lambda: [-1.2217, -2.7925, -1.396]
+    joint_limit: list[list[float]] = field(
+        default_factory=lambda: [
+            [-1.2217, 1.2217],
+            [-2.7925, 2.7925],
+            [-1.396, 1.396],
+        ]
     )
-    joint_limit_upper: list[float] = field(
-        default_factory=lambda: [1.2217, 2.7925, 1.396]
-    )
-    default_vel: float = 1.57
-    max_vel: float = 2.0
+    joint_vel_limit: list[float] = field(default_factory=lambda: [2.5, 2.5, 2.5])
     pose_pool: dict[str, list[float]] = field(
         default_factory=lambda: {
             "home": [0.0, 0.0, 0.0],

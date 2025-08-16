@@ -19,8 +19,7 @@ import threading
 
 import numpy as np
 import pytransform3d.rotations as pr
-from configs.vega_config import ManagerConfigDict
-from dexmotion.core.motion_manager import MotionManager
+from dexmotion.motion_manager import MotionManager
 from dexmotion.utils import robot_utils
 from loguru import logger
 
@@ -33,7 +32,7 @@ def is_running_remote() -> bool:
     """Check if the script is running in a remote environment.
 
     Returns:
-        True if running in a remote environment (no display), False otherwise.
+        bool: True if running in a remote environment (no display), False otherwise.
     """
     return "DISPLAY" not in os.environ
 
@@ -45,20 +44,23 @@ class BaseIKController:
     using the MotionManager for kinematics calculations.
 
     Attributes:
-        bot: Robot instance to control.
-        motion_manager: MotionManager instance for IK solving.
-        arm_dof: Number of degrees of freedom in the robot arms.
+        bot (Robot): Robot instance to control.
+        motion_manager (MotionManager): MotionManager instance for IK solving.
+        arm_dof (int): Number of degrees of freedom in the robot arms.
+        visualize (bool): Whether to enable visualization.
     """
 
     def __init__(self, bot: Robot | None = None, visualize: bool = True):
         """Initialize the arm IK controller.
 
         Args:
-            bot: Robot instance to control. If None, a new Robot instance will be created.
+            bot (Robot | None): Robot instance to control. If None, a new Robot
+                instance will be created.
+            visualize (bool): Whether to enable visualization. Defaults to True.
 
         Raises:
             RuntimeError: If config path can't be found or Motion Manager
-            initialization fails.
+                initialization fails.
         """
         # Initialize robot if not provided
         if bot is None:
@@ -81,21 +83,15 @@ class BaseIKController:
             raise
 
         # Initialize MotionManager for IK solving
-        logger.info(
-            f"Initializing Motion Manager with config: {ManagerConfigDict[self.bot.robot_model]()}."
-        )
+
         try:
+            self.bot.heartbeat.pause()
+
             self.motion_manager = MotionManager(
-                config=ManagerConfigDict[self.bot.robot_model]()
-            )
-            self.motion_manager.setup(
-                initialize_robot=True,
-                initialize_visualizer=self.visualize,
-                apply_initial_joint_configuration=True,
-                apply_locked_joints=True,
-                initialize_local_ik=True,
+                init_visualizer=self.visualize,
                 initial_joint_configuration_dict=joint_pos_dict,
             )
+
             logger.success("Motion Manager setup complete")
         except Exception as e:
             logger.error(f"Error initializing Motion Manager: {e}")
@@ -107,13 +103,14 @@ class BaseIKController:
         """Apply a delta movement to specified joints.
 
         Args:
-            new_joint_pos_dict: Dictionary of joint names and target positions
+            new_joint_pos_dict (dict[str, float]): Dictionary of joint names and
+                target positions.
 
         Returns:
-            Dictionary of updated joint positions
+            dict[str, float]: Dictionary of updated joint positions.
 
         Raises:
-            RuntimeError: If robot or IK solver is not initialized
+            RuntimeError: If robot or IK solver is not initialized.
         """
         if self.motion_manager.pin_robot is None:
             raise RuntimeError("Robot is not initialized")
@@ -135,7 +132,7 @@ class BaseIKController:
                 target_configuration=updated_new_joint_pos
             )
         )
-        self.motion_manager.set_qpos(qpos_dict)
+        self.motion_manager.set_joint_pos(qpos_dict)
 
         # Update visualizer if available
         if self.motion_manager.visualizer is not None:
@@ -156,16 +153,16 @@ class BaseIKController:
         """Move the specified arm by a delta in Cartesian space.
 
         Args:
-            delta_xyz: Translation delta in x, y, z (meters)
-            delta_rpy: Rotation delta in roll, pitch, yaw (radians)
-            arm_side: Which arm to move ("left" or "right")
+            delta_xyz (np.ndarray): Translation delta in x, y, z (meters).
+            delta_rpy (np.ndarray): Rotation delta in roll, pitch, yaw (radians).
+            arm_side (str): Which arm to move ("left" or "right").
 
         Returns:
-            Target joint positions for the specified arm
+            np.ndarray: Target joint positions for the specified arm.
 
         Raises:
-            ValueError: If an invalid arm side is specified
-            RuntimeError: If robot or IK solver is not initialized
+            ValueError: If an invalid arm side is specified.
+            RuntimeError: If robot or IK solver is not initialized.
         """
         if self.motion_manager.pin_robot is None:
             raise RuntimeError("Robot is not initialized")
@@ -175,10 +172,9 @@ class BaseIKController:
         current_qpos = self.motion_manager.get_joint_pos()
         assert isinstance(current_qpos, np.ndarray)
 
-        ee_pose = robot_utils.compute_fk(
-            self.motion_manager.pin_robot,
-            current_qpos,
-            self.motion_manager.target_frames,
+        ee_pose = self.motion_manager.fk(
+            frame_names=self.motion_manager.target_frames,
+            qpos=current_qpos,
             update_robot_state=False,
         )
 
@@ -186,19 +182,25 @@ class BaseIKController:
         right_ee_pose = ee_pose["R_ee"]
 
         if arm_side == "left":
-            ee_pose = left_ee_pose.np
-            ee_pose[:3, :3] = (
-                pr.matrix_from_euler(delta_rpy, 0, 1, 2, True) @ ee_pose[:3, :3]
+            ee_pose_np = left_ee_pose.np.copy()  # type: ignore
+            ee_pose_np[:3, :3] = (
+                pr.matrix_from_euler(delta_rpy, 0, 1, 2, True) @ ee_pose_np[:3, :3]
             )
-            ee_pose[:3, 3] += delta_xyz
-            target_poses_dict = {"L_ee": ee_pose, "R_ee": right_ee_pose.np}
+            ee_pose_np[:3, 3] += delta_xyz
+            target_poses_dict = {
+                "L_ee": ee_pose_np,
+                "R_ee": right_ee_pose.np,
+            }  # type: ignore
         elif arm_side == "right":
-            ee_pose = right_ee_pose.np
-            ee_pose[:3, 3] += delta_xyz
-            ee_pose[:3, :3] = (
-                pr.matrix_from_euler(delta_rpy, 0, 1, 2, True) @ ee_pose[:3, :3]
+            ee_pose_np = right_ee_pose.np.copy()  # type: ignore
+            ee_pose_np[:3, 3] += delta_xyz
+            ee_pose_np[:3, :3] = (
+                pr.matrix_from_euler(delta_rpy, 0, 1, 2, True) @ ee_pose_np[:3, :3]
             )
-            target_poses_dict = {"L_ee": left_ee_pose.np, "R_ee": ee_pose}
+            target_poses_dict = {
+                "L_ee": left_ee_pose.np,
+                "R_ee": ee_pose_np,
+            }  # type: ignore
         else:
             raise ValueError(
                 f"Invalid arm side: {arm_side}. Must be 'left' or 'right'."
@@ -207,7 +209,7 @@ class BaseIKController:
         qpos_dict, is_in_collision, is_within_joint_limits = (
             self.motion_manager.local_ik_solver.solve_ik(target_poses_dict)
         )
-        self.motion_manager.set_qpos(qpos_dict)
+        self.motion_manager.set_joint_pos(qpos_dict)
 
         # Update visualizer if available
         if self.motion_manager.visualizer is not None:
@@ -230,11 +232,11 @@ class BaseArmTeleopNode(DualSenseTeleopBase):
     """Base teleop node with shared functionality for arm control.
 
     Attributes:
-        arm_side: Currently active arm ("left" or "right").
-        arms: Dictionary of robot arm interfaces.
-        arm_target_qpos: Target joint positions for each arm.
-        arm_motion_lock: Thread lock for synchronizing arm motion updates.
-        arm_control_thread: Thread for running the arm control loop.
+        arm_side (str): Currently active arm ("left" or "right").
+        arms (dict): Dictionary of robot arm interfaces.
+        arm_target_qpos (dict): Target joint positions for each arm.
+        arm_motion_lock (threading.Lock): Thread lock for synchronizing arm updates.
+        arm_control_thread (threading.Thread): Thread for running the arm control loop.
     """
 
     def __init__(
@@ -246,9 +248,9 @@ class BaseArmTeleopNode(DualSenseTeleopBase):
         """Initialize the base teleop node.
 
         Args:
-            control_hz: Control loop frequency in Hz.
-            button_update_hz: Button update frequency in Hz.
-            device_index: Index of the DualSense controller device.
+            control_hz (int): Control loop frequency in Hz. Defaults to 200.
+            button_update_hz (int): Button update frequency in Hz. Defaults to 20.
+            device_index (int): Index of the DualSense controller device. Defaults to 0.
         """
         super().__init__(control_hz, button_update_hz, device_index)
         self.arm_side = "left"
@@ -303,7 +305,6 @@ class BaseArmTeleopNode(DualSenseTeleopBase):
                 with self.arm_motion_lock:
                     target_qpos = self.arm_target_qpos[self.arm_side].copy()
                 arm.set_joint_pos(target_qpos)
-                limiter.sleep()
             limiter.sleep()
 
     def update_motion(self) -> None:

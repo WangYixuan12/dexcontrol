@@ -14,6 +14,7 @@ This script demonstrates how to query and display various robot status informati
 including software version, component status, and battery level.
 """
 
+from dexcontrol.config.vega import get_vega_config
 from dexcontrol.robot import Robot
 
 
@@ -24,14 +25,19 @@ def main() -> None:
     information and displays the results.
     """
     # Initialize robot with default configuration
-    bot = Robot()
+    configs = get_vega_config()
+    # temporarily disable estop checking so that even if the robot is in estop,
+    # we can still get the information
+    # DO NOT DO THIS IN OTHER CASES
+    configs.estop.enabled = False
+    bot = Robot(configs=configs)
 
     # Display robot system information
     bot.get_software_version(show=True)
     bot.get_component_status(show=True)
-    bot.battery.show()
     bot.estop.show()
     bot.heartbeat.show()
+    bot.battery.show()
     bot.shutdown()
 
 

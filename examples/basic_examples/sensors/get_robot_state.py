@@ -18,6 +18,7 @@ shutting down.
 
 import numpy as np
 import tyro
+from loguru import logger
 
 from dexcontrol.robot import Robot
 
@@ -33,18 +34,29 @@ def main() -> None:
     with Robot() as bot:
         # Get joint positions from all components
         joint_positions = {
-            "Left arm": bot.left_arm.get_joint_pos(),
-            "Right arm": bot.right_arm.get_joint_pos(),
-            "Left hand": bot.left_hand.get_joint_pos(),
-            "Right hand": bot.right_hand.get_joint_pos(),
-            "Head": bot.head.get_joint_pos(),
-            "Torso": bot.torso.get_joint_pos(),
-            "Chassis": bot.chassis.get_joint_pos(),
+            "Left arm": (bot.left_arm.get_joint_pos(), bot.left_arm.get_timestamp_ns()),
+            "Right arm": (
+                bot.right_arm.get_joint_pos(),
+                bot.right_arm.get_timestamp_ns(),
+            ),
+            "Left hand": (
+                bot.left_hand.get_joint_pos(),
+                bot.left_hand.get_timestamp_ns(),
+            ),
+            "Right hand": (
+                bot.right_hand.get_joint_pos(),
+                bot.right_hand.get_timestamp_ns(),
+            ),
+            "Head": (bot.head.get_joint_pos(), bot.head.get_timestamp_ns()),
+            "Torso": (bot.torso.get_joint_pos(), bot.torso.get_timestamp_ns()),
+            "Chassis": (bot.chassis.get_joint_pos(), bot.chassis.get_timestamp_ns()),
         }
 
         # Log joint positions
-        for component, position in joint_positions.items():
-            print(f"{component} joint position: {np.round(position, 3)}")
+        for component, (position, timestamp) in joint_positions.items():
+            logger.info(
+                f"{component} joint position: {np.round(position, 3)}, timestamp: {timestamp}"
+            )
 
 
 if __name__ == "__main__":

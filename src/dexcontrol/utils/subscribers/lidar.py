@@ -92,6 +92,7 @@ class LidarSubscriber(BaseZenohSubscriber):
                 - ranges: Array of range measurements in meters
                 - angles: Array of corresponding angles in radians
                 - qualities: Array of quality values (0-255) if available, None otherwise
+                - timestamp: Timestamp in nanoseconds (int)
         """
         with self._data_lock:
             if self._latest_raw_data is None:

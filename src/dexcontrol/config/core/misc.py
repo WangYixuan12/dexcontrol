@@ -13,7 +13,10 @@
 import os
 from dataclasses import dataclass
 
-from dexcontrol.utils.constants import DISABLE_HEARTBEAT_ENV_VAR
+from dexcontrol.utils.constants import (
+    DISABLE_ESTOP_CHECKING_ENV_VAR,
+    DISABLE_HEARTBEAT_ENV_VAR,
+)
 
 
 @dataclass
@@ -27,6 +30,16 @@ class EStopConfig:
     _target_: str = "dexcontrol.core.misc.EStop"
     state_sub_topic: str = "state/estop"
     estop_query_name: str = "system/estop"
+    enabled: bool = True  # Can be disabled via DEXCONTROL_DISABLE_ESTOP_CHECKING=1
+
+    def __post_init__(self):
+        """Check environment variable to disable estop checking."""
+        if os.getenv(DISABLE_ESTOP_CHECKING_ENV_VAR, "0").lower() in (
+            "1",
+            "true",
+            "yes",
+        ):
+            self.enabled = False
 
 
 @dataclass

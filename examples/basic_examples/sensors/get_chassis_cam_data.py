@@ -8,15 +8,15 @@
 # 2. Commercial License
 #    For commercial licensing terms, contact: contact@dexmate.ai
 
-"""This example demonstrates how to retrieve and display chassis camera data.
+"""This example demonstrates how to retrieve and display chassis camera data in real-time.
 
-The script initializes the robot with all chassis cameras enabled, captures an
-image from each one, and displays them all in a single tiled window.
+The script initializes the robot with all chassis cameras enabled, captures images
+from each camera continuously, and displays them in a single tiled window that updates live.
+Press Ctrl+C to exit the live feed.
 """
 
 import math
 import time
-from typing import List
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -27,42 +27,88 @@ from dexcontrol.config.vega import get_vega_config
 from dexcontrol.robot import Robot
 
 
-def display_tiled_cameras(images: List[np.ndarray], titles: List[str]) -> None:
-    """Displays multiple images in a tiled matplotlib figure.
+class LiveCameraDisplay:
+    """Handles live display of multiple camera feeds in a tiled layout."""
 
-    Args:
-        images: A list of NumPy arrays, where each array is an image.
-        titles: A list of titles corresponding to each image.
+    def __init__(self, camera_definitions: dict):
+        """Initialize the live camera display.
 
-    Raises:
-        ValueError: If the list of images is empty.
-    """
-    if not images:
-        raise ValueError("No images were provided for display.")
+        Args:
+            camera_definitions: Dictionary mapping camera names to display names
+        """
+        self.camera_definitions = camera_definitions
+        self.num_cameras = len(camera_definitions)
 
-    num_images = len(images)
-    cols = math.ceil(math.sqrt(num_images))
-    rows = math.ceil(num_images / cols)
+        # Calculate grid layout
+        self.cols = math.ceil(math.sqrt(self.num_cameras))
+        self.rows = math.ceil(self.num_cameras / self.cols)
 
-    fig, axes = plt.subplots(rows, cols, figsize=(15, 10), squeeze=False)
-    fig.suptitle("Chassis Camera Feeds", fontsize=16)
+        # Setup matplotlib figure and axes
+        plt.ion()  # Turn on interactive mode
+        self.fig, self.axes = plt.subplots(
+            self.rows, self.cols, figsize=(15, 10), squeeze=False
+        )
+        self.fig.suptitle(
+            "Live Chassis Camera Feeds (Press Ctrl+C to exit)", fontsize=16
+        )
 
-    for i, (img, title) in enumerate(zip(images, titles)):
-        ax = axes[i // cols, i % cols]
-        ax.imshow(img)
-        ax.set_title(title)
-        ax.axis("off")
+        # Initialize image plots
+        self.image_plots = {}
+        for i, (camera_name, display_name) in enumerate(camera_definitions.items()):
+            ax = self.axes[i // self.cols, i % self.cols]
+            ax.set_title(display_name)
+            ax.axis("off")
+            # Create empty image plot
+            self.image_plots[camera_name] = ax.imshow(
+                np.zeros((480, 640, 3), dtype=np.uint8)
+            )
 
-    # Hide any unused subplots
-    for i in range(num_images, rows * cols):
-        axes[i // cols, i % cols].axis("off")
+        # Hide unused subplots
+        for i in range(self.num_cameras, self.rows * self.cols):
+            self.axes[i // self.cols, i % self.cols].axis("off")
 
-    plt.tight_layout()
-    plt.show()
+        plt.tight_layout()
+        plt.show(block=False)
+
+    def update_images(self, robot) -> None:
+        """Update all camera images in the display.
+
+        Args:
+            robot: The robot instance to get camera data from
+        """
+        updated = False
+        for camera_name, display_name in self.camera_definitions.items():
+            try:
+                camera_sensor = getattr(robot.sensors, camera_name, None)
+                if camera_sensor and camera_sensor.is_active():
+                    image = camera_sensor.get_obs()
+                    if image is not None:
+                        self.image_plots[camera_name].set_array(image)
+                        updated = True
+                    else:
+                        logger.debug(f"No image data from '{display_name}'.")
+                else:
+                    logger.debug(
+                        f"Camera sensor '{display_name}' is not available or not active."
+                    )
+            except Exception as e:
+                logger.error(
+                    f"Error getting data from '{display_name}': {e}",
+                    exc_info=True,
+                )
+
+        if updated:
+            self.fig.canvas.draw()
+            self.fig.canvas.flush_events()
+
+    def close(self):
+        """Close the display window."""
+        plt.ioff()
+        plt.close(self.fig)
 
 
 def main() -> None:
-    """Initializes the robot, retrieves chassis camera data, and displays it."""
+    """Initializes the robot, retrieves chassis camera data, and displays it in real-time."""
     configs = get_vega_config()
 
     # Define chassis cameras to be used in this example.
@@ -84,41 +130,30 @@ def main() -> None:
     robot = Robot(configs=configs)
 
     # Wait a moment for camera streams to stabilize.
+    logger.info("Waiting for camera streams to stabilize...")
     time.sleep(3)
 
-    images, titles = [], []
-    for camera_name, display_name in camera_definitions.items():
-        try:
-            camera_sensor = getattr(robot.sensors, camera_name, None)
-            if camera_sensor and camera_sensor.is_active():
-                image = camera_sensor.get_obs()
-                if image is not None:
-                    images.append(image)
-                    titles.append(display_name)
-                    logger.info(f"Retrieved '{display_name}' with shape: {image.shape}")
-                else:
-                    logger.warning(f"Failed to get image from '{display_name}'.")
-            else:
-                logger.warning(
-                    f"Camera sensor '{display_name}' is not available or not active."
-                )
-        except Exception as e:
-            logger.error(
-                f"Error getting data from '{display_name}': {e}",
-                exc_info=True,
-            )
+    # Initialize live display
+    display = LiveCameraDisplay(camera_definitions)
+
+    logger.info("Starting live camera feed. Press Ctrl+C to exit...")
 
     try:
-        if images:
-            logger.info(f"Displaying {len(images)} camera feeds...")
-            display_tiled_cameras(images, titles)
-        else:
-            logger.error("No camera data was retrieved. Nothing to display.")
-    except ValueError as e:
-        logger.error(f"Error displaying images: {e}")
+        while True:
+            display.update_images(robot)
+            time.sleep(0.1)  # Update at ~10 FPS
+
+    except KeyboardInterrupt:
+        logger.info("Keyboard interrupt received. Stopping live feed...")
+
+    except Exception as e:
+        logger.error(f"Unexpected error in live feed: {e}", exc_info=True)
+
     finally:
-        logger.info("Shutting down the robot.")
+        logger.info("Shutting down...")
+        display.close()
         robot.shutdown()
+        logger.info("Shutdown complete.")
 
 
 if __name__ == "__main__":

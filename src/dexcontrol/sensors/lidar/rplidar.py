@@ -87,6 +87,7 @@ class RPLidarSensor:
                 - ranges: Array of range measurements in meters
                 - angles: Array of corresponding angles in radians
                 - qualities: Array of quality values (0-255) if available, None otherwise
+                - timestamp: Timestamp in nanoseconds (int)
         """
         return self._subscriber.get_latest_data()
 

@@ -19,10 +19,7 @@ from typing import Literal
 
 import numpy as np
 import tyro
-from configs.local_pink_ik_config import CustomLocalPinkIKConfig
-from configs.ompl_planner_config import CustomOMPLPlannerConfig
-from dexmotion.configs import create_motion_manager_config
-from dexmotion.core.motion_manager import MotionManager
+from dexmotion.motion_manager import MotionManager
 from dexmotion.tasks.move_out_of_self_collision_task import MoveOutOfSelfCollisionTask
 from dexmotion.tasks.move_to_configuration_task import MoveToConfigurationTask
 from dexmotion.utils import robot_utils
@@ -68,50 +65,26 @@ class ArmSafeInitializer:
         )
 
         # Setup motion manager
-        self.motion_manager = self._setup_motion_manager(
-            initial_joint_configuration, self.bot.robot_model
+        self.motion_manager = MotionManager(
+            init_visualizer=self.visualize,
+            initial_joint_configuration_dict=initial_joint_configuration,
+            init_local_ik=False,
         )
 
         # Initialize self-collision avoidance Task
         self.move_out_of_self_collision_task = MoveOutOfSelfCollisionTask(
-            config=create_motion_manager_config(self.bot.robot_model),
             initial_joint_configuration=initial_joint_configuration,
             motion_manager=self.motion_manager,
             range_size=0.3,
+            visualize=self.visualize,
         )
 
         # Will be initialized when needed
-        self.move_to_configuration_task: MoveToConfigurationTask | None = None
-
-    def _setup_motion_manager(
-        self, initial_joint_configuration: dict[str, float], robot_name: str
-    ) -> MotionManager:
-        """Set up the motion manager.
-
-        Args:
-            initial_joint_configuration: Initial joint configuration dictionary.
-
-        Returns:
-            Configured motion manager.
-        """
-
-        motion_manager = MotionManager(config=create_motion_manager_config(robot_name))
-
-        motion_manager.config.local_ik_config = CustomLocalPinkIKConfig()
-        motion_manager.config.ompl_planner_config = CustomOMPLPlannerConfig()
-
-        motion_manager.setup(
-            initialize_robot=True,
-            initialize_local_ik=False,
-            initialize_planner=True,
-            planner_type="ompl_planner",
-            initialize_trajectory_generator=True,
-            initialize_visualizer=self.visualize,
-            apply_initial_joint_configuration=True,
-            initial_joint_configuration_dict=initial_joint_configuration,
+        self.move_to_configuration_task = MoveToConfigurationTask(
+            motion_manager=self.motion_manager,
+            planner_type="ompl",
+            visualize=self.visualize,  # Use the same visualization setting
         )
-
-        return motion_manager
 
     def _initialize_arms_and_hands(self, bot: Robot) -> tuple[Arm, Arm, Hand, Hand]:
         """Initialize and configure robot arms and hands.
@@ -161,9 +134,9 @@ class ArmSafeInitializer:
 
     def run(
         self,
-        target: Literal["zero", "L_shape"] = "L_shape",
+        target: Literal["zero", "L_shape", "lift_up"] = "L_shape",
         shutdown_after_execution: bool = True,
-        time_to_move_to_collision_free_config: float = 2.0,
+        collision_escape_time: float = 2.0,
     ) -> None:
         """Move robot arms to a preset position and opens the hands.
 
@@ -173,25 +146,23 @@ class ArmSafeInitializer:
         """
         assert isinstance(self.motion_manager, MotionManager)
         assert self.motion_manager.pin_robot is not None
-        assert self.motion_manager.visualizer is not None
 
         joint_names = robot_utils.get_joint_names(self.motion_manager.pin_robot)
 
         # Check for and resolve self-collisions
         self._handle_self_collisions(
             joint_names,
-            time_to_move_to_collision_free_config,
+            collision_escape_time,
         )
 
         # Update current position
         current_qpos_dict = self.bot.get_joint_pos_dict(["left_arm", "right_arm"])
-        self.motion_manager.set_qpos(current_qpos_dict)
+        self.motion_manager.set_joint_pos(current_qpos_dict)
 
         # Get goal configuration dictionary
         goal_configuration_dict = self._create_goal_configuration(target)
         # Initialize move to configuration task
         self.move_to_configuration_task = MoveToConfigurationTask(
-            config=create_motion_manager_config(self.bot.robot_model),
             initial_joint_configuration=current_qpos_dict,
             motion_manager=self.motion_manager,
         )
@@ -208,13 +179,15 @@ class ArmSafeInitializer:
 
         # Visualize trajectory
         if self.visualize:
+            if self.motion_manager.visualizer is None:
+                raise RuntimeError("Visualizer is not initialized")
             self.motion_manager.visualizer.update_motion_plan(
                 motion_plan=qs_sample,
                 joint_names=joint_names,
                 duration=1.0,
             )
         user_input = input(
-            "Press Enter to run the trajectory on the real robot (or type 'abort' to cancel): "
+            "Press \033[1mENTER\033[0m to run the trajectory on the real robot (or type 'abort' to cancel): "
         )
         if user_input.lower() == "abort":
             logger.info("Trajectory execution aborted by user")
@@ -242,7 +215,7 @@ class ArmSafeInitializer:
     def _handle_self_collisions(
         self,
         joint_names: list[str],
-        time_to_move_to_collision_free_config: float = 2.0,
+        collision_escape_time: float = 2.0,
     ) -> None:
         """Handle self-collision detection and resolution.
 
@@ -254,18 +227,13 @@ class ArmSafeInitializer:
         )
 
         if is_collision_present:
-            logger.warning("Self-collision detected!")
             if not success:
                 raise RuntimeError("Failed to resolve self-collision")
 
             assert isinstance(collision_free_configuration, dict)
-            logger.info("Found collision-free configuration")
 
             if self.motion_manager.pin_robot is None:
                 raise RuntimeError("Robot is not initialized")
-
-            if self.motion_manager.visualizer is None:
-                raise RuntimeError("Visualizer is not initialized")
 
             # Get initial configuration
             initial_configuration = (
@@ -275,7 +243,7 @@ class ArmSafeInitializer:
 
             # Create linearly interpolated trajectory between initial and
             # collision-free configuration
-            num_steps = int(self.control_hz * time_to_move_to_collision_free_config)
+            num_steps = int(self.control_hz * collision_escape_time)
             interpolated_configuration_list = []
 
             for i in range(num_steps + 1):
@@ -294,18 +262,21 @@ class ArmSafeInitializer:
                 interpolated_configuration_list.append(interpolated_configuration)
 
             # Visualize the interpolated trajectory
-            self.motion_manager.visualizer.update_motion_plan(
-                motion_plan=np.array(
-                    [
-                        robot_utils.get_qpos_from_joint_dict(
-                            self.motion_manager.pin_robot, config
-                        )
-                        for config in interpolated_configuration_list
-                    ]
-                ),
-                joint_names=joint_names,
-                duration=1.0,
-            )
+            if self.visualize:
+                if self.motion_manager.visualizer is None:
+                    raise RuntimeError("Visualizer is not initialized")
+                self.motion_manager.visualizer.update_motion_plan(
+                    motion_plan=np.array(
+                        [
+                            robot_utils.get_qpos_from_joint_dict(
+                                self.motion_manager.pin_robot, config
+                            )
+                            for config in interpolated_configuration_list
+                        ]
+                    ),
+                    joint_names=joint_names,
+                    duration=1.0,
+                )
 
             user_input = input(
                 "Press Enter to move to collision-free configuration "
@@ -323,8 +294,6 @@ class ArmSafeInitializer:
             logger.info("Waiting for robot to stabilize...")
             time.sleep(3)
             logger.success("Moved to collision-free configuration!")
-        else:
-            logger.info("No self-collision detected")
 
     def _create_goal_configuration(self, target: str) -> dict[str, float]:
         """Create goal configuration dictionary for the target pose.
@@ -361,10 +330,10 @@ class ArmSafeInitializer:
 
 
 def main(
-    target: Literal["zero", "L_shape"] = "L_shape",
+    target: Literal["zero", "L_shape", "lift_up"] = "L_shape",
     control_hz: int = 250,
     visualize: bool = True,
-    time_to_move_to_collision_free_config: float = 2.0,
+    collision_escape_time: float = 2.0,
 ) -> None:
     """Main entry point for the script.
 
@@ -372,7 +341,7 @@ def main(
         target: Target preset position.
         control_hz: Control frequency in Hz.
         visualize: Whether to visualize the trajectory.
-        time_to_move_to_collision_free_config: Time to move to collision-free
+        collision_escape_time: Time to move to collision-free
         configuration in seconds.
     """
     logger.info(f"Initializing arm safe movement to '{target}' position")
@@ -381,7 +350,7 @@ def main(
     )
     arm_safe_initializer.run(
         target,
-        time_to_move_to_collision_free_config=time_to_move_to_collision_free_config,
+        collision_escape_time=collision_escape_time,
     )
 
 

@@ -76,7 +76,7 @@ class ChassisIMUSensor:
         """
         return self._subscriber.wait_for_active(timeout)
 
-    def get_obs(self, obs_keys: list[Literal['ang_vel', 'acc', 'quat']] | None = None) -> dict[str, np.ndarray]:
+    def get_obs(self, obs_keys: list[Literal['ang_vel', 'acc', 'quat']] | None = None) -> dict[Literal['ang_vel', 'acc', 'quat', 'timestamp_ns'], np.ndarray]:
         """Get observation data for the ZED IMU sensor.
 
         Args:
@@ -89,6 +89,7 @@ class ChassisIMUSensor:
             - 'ang_vel': Angular velocity from 'angular_velocity'
             - 'acc': Linear acceleration from 'acceleration'
             - 'quat': Orientation quaternion from 'orientation', in wxyz convention
+            - 'timestamp_ns': Timestamp in nanoseconds
         """
         if obs_keys is None:
             obs_keys = ['ang_vel', 'acc', 'quat']
@@ -109,6 +110,9 @@ class ChassisIMUSensor:
                 obs_out[key] = np.array([data.quat_w, data.quat_x, data.quat_y, data.quat_z])
             else:
                 raise ValueError(f"Invalid observation key: {key}")
+
+        if hasattr(data, 'timestamp_ns'):
+            obs_out['timestamp_ns'] = data.timestamp_ns
 
         return obs_out
 

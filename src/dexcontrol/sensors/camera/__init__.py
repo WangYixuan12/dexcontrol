@@ -14,10 +14,12 @@ This module provides camera sensor classes that use the specialized camera
 subscribers for RGB and RGBD camera data, matching the dexsensor structure.
 """
 
+from .luxonis_camera import LuxonisCameraSensor
 from .rgb_camera import RGBCameraSensor
 from .zed_camera import ZedCameraSensor
 
 __all__ = [
     "RGBCameraSensor",
     "ZedCameraSensor",
+    "LuxonisCameraSensor",
 ]

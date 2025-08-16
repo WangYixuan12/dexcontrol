@@ -19,7 +19,7 @@ class RGBCameraConfig:
         _target_: The target class to instantiate.
         name: A unique name for the sensor instance.
         enable: Whether the sensor is enabled.
-        use_rtc: If True, uses the high-performance RTCSubscriber. If False,
+        use_rtc: If True, uses the RTCSubscriber. If False,
                  uses the standard RGBCameraSubscriber with a Zenoh topic.
         enable_fps_tracking: If True, tracks and logs the FPS of the stream.
         fps_log_interval: The interval in seconds for logging FPS.

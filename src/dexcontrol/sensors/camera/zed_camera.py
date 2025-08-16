@@ -140,9 +140,6 @@ class ZedCameraSensor:
 
     def _query_camera_info(self) -> None:
         """Query Zenoh for camera metadata if using RTC."""
-        if not self._configs.use_rtc:
-            logger.info(f"'{self._name}': Skipping camera info query in non-RTC mode.")
-            return
 
         enabled_rgb_streams = [
             s
@@ -171,7 +168,6 @@ class ZedCameraSensor:
 
             logger.info(f"'{self._name}': Querying for camera info at '{final_info_key}'.")
             self._camera_info = query_zenoh_json(self._zenoh_session, final_info_key)
-
             if self._camera_info:
                 logger.info(f"'{self._name}': Successfully received camera info.")
             else:
@@ -249,7 +245,8 @@ class ZedCameraSensor:
             return False
 
     def get_obs(
-        self, obs_keys: Optional[list[str]] = None
+        self, obs_keys: Optional[list[str]] = None,
+        include_timestamp: bool = False
     ) -> Dict[str, Optional[np.ndarray]]:
         """Get the latest observation data from specified camera streams.
 
@@ -257,17 +254,29 @@ class ZedCameraSensor:
             obs_keys: A list of stream names to retrieve data from (e.g.,
                       ['left_rgb', 'depth']). If None, retrieves data from all
                       enabled streams.
+            include_timestamp: If True, includes the timestamp in the observation data.
+                                The timestamp data is not available for RTC streams.
 
         Returns:
-            A dictionary mapping stream names to their latest image data. The
+            A dictionary mapping stream names to their latest image data with timestamp. The
             image is a numpy array (HxWxC for RGB, HxW for depth) or None if
-            no data is available for that stream.
+            no data is available for that stream. If include_timestamp is True,
+            the value in the dictionary is a tuple with the image and timestamp.
         """
         keys_to_fetch = obs_keys or self.available_streams
         obs_out = {}
         for key in keys_to_fetch:
             subscriber = self._subscribers.get(key)
-            obs_out[key] = subscriber.get_latest_data() if subscriber else None
+            data = subscriber.get_latest_data() if subscriber else None
+
+            is_tuple_or_list = isinstance(data, (tuple, list))
+
+            if include_timestamp:
+                if not is_tuple_or_list:
+                    logger.warning(f"Timestamp is not available yet for {key} stream.")
+                obs_out[key] = data
+            else:
+                obs_out[key] = data[0] if is_tuple_or_list else data
         return obs_out
 
     def get_left_rgb(self) -> Optional[np.ndarray]:

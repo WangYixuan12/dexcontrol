@@ -32,6 +32,7 @@ from dexcontrol.utils.constants import COMM_CFG_PATH_ENV_VAR
 # Package-level constants
 LIB_PATH: Final[Path] = Path(__file__).resolve().parent
 CFG_PATH: Final[Path] = LIB_PATH / "config"
+MIN_SOC_SOFTWARE_VERSION: int = 233
 
 logger.configure(handlers=[{"sink": RichHandler(markup=True), "format": "{message}"}])
 

@@ -89,11 +89,11 @@ class RobotComponent:
             Parsed protobuf state message.
 
         Raises:
-            RuntimeError: If no state data is available.
+            None: If no state data is available.
         """
         state = self._subscriber.get_latest_data()
         if state is None:
-            raise RuntimeError("No state data available")
+            logger.error(f"No state data available for {self.__class__.__name__}")
         return state
 
     def wait_for_active(self, timeout: float = 5.0) -> bool:
@@ -133,6 +133,15 @@ class RobotComponent:
         if hasattr(self, "_subscriber") and self._subscriber:
             self._subscriber.shutdown()
 
+    def get_timestamp_ns(self) -> int:
+        """Get the current timestamp (in nanoseconds) of the most recent state update.
+
+        Returns:
+            The current timestamp in nanoseconds when driver updated the state.
+            We convert the time to client clock by adding the server time offset.
+        """
+        return self._get_state().timestamp_ns
+
 
 class RobotJointComponent(RobotComponent):
     """Base class for robot components with both state and control interfaces.
@@ -171,6 +180,8 @@ class RobotJointComponent(RobotComponent):
         state_message_type: type[M],
         zenoh_session: zenoh.Session,
         joint_name: list[str] | None = None,
+        joint_limit: list[list[float]] | None = None,
+        joint_vel_limit: list[float] | None = None,
         pose_pool: Mapping[str, list[float] | np.ndarray] | None = None,
     ) -> None:
         """Initializes RobotJointComponent.
@@ -190,6 +201,13 @@ class RobotJointComponent(RobotComponent):
             resolved_topic
         )
         self._joint_name: list[str] | None = joint_name
+        self._joint_limit: np.ndarray | None = (
+            np.array(joint_limit) if joint_limit else None
+        )
+        self._joint_vel_limit: np.ndarray | None = (
+            np.array(joint_vel_limit) if joint_vel_limit else None
+        )
+
         self._pose_pool: dict[str, np.ndarray] | None = (
             self._convert_pose_pool_to_arrays(pose_pool)
         )
@@ -230,6 +248,18 @@ class RobotJointComponent(RobotComponent):
         if self._joint_name is None:
             raise ValueError("Joint names not available for this component")
         return self._joint_name.copy()
+
+    @property
+    def joint_limit(self) -> np.ndarray | None:
+        """Gets the joint limits of the component."""
+        return self._joint_limit.copy() if self._joint_limit is not None else None
+
+    @property
+    def joint_vel_limit(self) -> np.ndarray | None:
+        """Gets the joint velocity limits of the component."""
+        return (
+            self._joint_vel_limit.copy() if self._joint_vel_limit is not None else None
+        )
 
     def get_predefined_pose(self, pose_name: str) -> np.ndarray:
         """Gets a predefined pose from the pose pool.
@@ -466,7 +496,7 @@ class RobotJointComponent(RobotComponent):
     def _convert_joint_cmd_to_array(
         self,
         joint_cmd: Float[np.ndarray, " N"] | list[float] | dict[str, float],
-        clip_value: float | None = None,
+        clip_value: float | np.ndarray | None = None,
     ) -> np.ndarray:
         """Convert joint command to numpy array format.
 
@@ -475,7 +505,9 @@ class RobotJointComponent(RobotComponent):
                 - List of joint values [j1, j2, ..., jN]
                 - Numpy array with shape (N,)
                 - Dictionary mapping joint names to values
-            clip_value: Optional value to clip the output array between [-clip_value, clip_value].
+            clip_value: Optional value to clip the output array. Can be:
+                - float: symmetric clipping between [-clip_value, clip_value]
+                - numpy array: element-wise clipping between [-clip_value, clip_value]
 
         Returns:
             Joint command as numpy array.
@@ -659,6 +691,11 @@ class RobotJointComponent(RobotComponent):
         # Convert to array format
         if isinstance(joint_pos, (list, dict)):
             joint_pos = self._convert_joint_cmd_to_array(joint_pos)
+
+        if self._joint_limit is not None:
+            joint_pos = np.clip(
+                joint_pos, self._joint_limit[:, 0], self._joint_limit[:, 1]
+            )
 
         self._send_position_command(joint_pos)
 

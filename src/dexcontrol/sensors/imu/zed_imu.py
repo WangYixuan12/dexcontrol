@@ -75,7 +75,7 @@ class ZedIMUSensor:
 
         Args:
             obs_keys: List of observation keys to retrieve. If None, returns all available data.
-                     Valid keys: ['ang_vel', 'acc', 'quat']
+                     Valid keys: ['ang_vel', 'acc', 'quat', 'timestamp']
 
         Returns:
             Dictionary with observation data including all IMU measurements.
@@ -83,6 +83,7 @@ class ZedIMUSensor:
             - 'ang_vel': Angular velocity from 'angular_velocity'
             - 'acc': Linear acceleration from 'acceleration'
             - 'quat': Orientation quaternion from 'orientation'
+            - 'timestamp_ns': Timestamp from 'timestamp'
         """
         if obs_keys is None:
             obs_keys = ['ang_vel', 'acc', 'quat']
@@ -91,7 +92,7 @@ class ZedIMUSensor:
         if data is None:
             return None
 
-        obs_out = {}
+        obs_out = {'timestamp_ns': data['timestamp']}
 
         for key in obs_keys:
             if key == 'ang_vel':

@@ -58,24 +58,23 @@ class Head(RobotJointComponent):
             state_message_type=dexcontrol_msg_pb2.HeadState,
             zenoh_session=zenoh_session,
             joint_name=configs.joint_name,
+            joint_limit=configs.joint_limit
+            if hasattr(configs, "joint_limit")
+            else None,
+            joint_vel_limit=configs.joint_vel_limit
+            if hasattr(configs, "joint_vel_limit")
+            else None,
             pose_pool=configs.pose_pool,
         )
 
         self.mode_querier: Final[zenoh.Querier] = zenoh_session.declare_querier(
             resolve_key_name(configs.set_mode_query), timeout=2.0
         )
-        self.default_vel: Final[float] = configs.default_vel
-        self.max_vel: Final[float] = configs.max_vel
-        assert self.max_vel > self.default_vel, (
-            "max_vel must be greater than default_vel"
-        )
-        self._joint_limit: Float[np.ndarray, "3 2"] = np.stack(
-            [configs.joint_limit_lower, configs.joint_limit_upper], axis=1
-        )
+        assert self._joint_vel_limit is not None, "joint_vel_limit is not set"
 
     def set_joint_pos(
         self,
-        joint_pos: Float[np.ndarray, "2"] | list[float] | dict[str, float],
+        joint_pos: Float[np.ndarray, "3"] | list[float] | dict[str, float],
         relative: bool = False,
         wait_time: float = 0.0,
         wait_kwargs: dict[str, float] | None = None,
@@ -87,7 +86,7 @@ class Head(RobotJointComponent):
         Args:
             joint_pos: Joint positions as either:
                 - List of joint values [j1, j2]
-                - Numpy array with shape (2,), in radians
+                - Numpy array with shape (3,), in radians
                 - Dictionary mapping joint names to position values
             relative: If True, the joint positions are relative to the current position.
             wait_time: Time to wait after sending command in seconds. If 0, returns
@@ -110,8 +109,8 @@ class Head(RobotJointComponent):
 
     def set_joint_pos_vel(
         self,
-        joint_pos: Float[np.ndarray, "2"] | list[float] | dict[str, float],
-        joint_vel: Float[np.ndarray, "2"]
+        joint_pos: Float[np.ndarray, "3"] | list[float] | dict[str, float],
+        joint_vel: Float[np.ndarray, "3"]
         | list[float]
         | dict[str, float]
         | float
@@ -126,11 +125,11 @@ class Head(RobotJointComponent):
         Args:
             joint_pos: Joint positions as either:
                 - List of joint values [j1, j2]
-                - Numpy array with shape (2,), in radians
+                - Numpy array with shape (3,), in radians
                 - Dictionary mapping joint names to position values
             joint_vel: Optional joint velocities as either:
                 - List of joint values [v1, v2]
-                - Numpy array with shape (2,), in rad/s
+                - Numpy array with shape (3,), in rad/s
                 - Dictionary mapping joint names to velocity values
                 - Single float value to be applied to all joints
                 If None, velocities are calculated based on default velocity setting.
@@ -154,6 +153,15 @@ class Head(RobotJointComponent):
         # Convert inputs to numpy arrays
         joint_pos = self._convert_joint_cmd_to_array(joint_pos)
         joint_vel = self._process_joint_velocities(joint_vel, joint_pos)
+
+        if self._joint_limit is not None:
+            joint_pos = np.clip(
+                joint_pos, self._joint_limit[:, 0], self._joint_limit[:, 1]
+            )
+        if self._joint_vel_limit is not None:
+            joint_vel = np.clip(
+                joint_vel, -self._joint_vel_limit, self._joint_vel_limit
+            )
 
         # Create and send control message
         control_msg = dexcontrol_msg_pb2.HeadCommand()
@@ -197,12 +205,12 @@ class Head(RobotJointComponent):
                 logger.info(reply.ok.payload.to_string())
         time.sleep(0.5)
 
-    def get_joint_limit(self) -> Float[np.ndarray, "3 2"]:
+    def get_joint_limit(self) -> Float[np.ndarray, "3 2"] | None:
         """Get the joint limits of the head.
 
         Returns:
             Array of joint limits with shape (3, 2), where the first column contains
-            lower limits and the second column contains upper limits.
+            lower limits and the second column contains upper limits, or None if not configured.
         """
         return self._joint_limit
 
@@ -229,7 +237,7 @@ class Head(RobotJointComponent):
 
     def _process_joint_velocities(
         self,
-        joint_vel: Float[np.ndarray, "2"]
+        joint_vel: Float[np.ndarray, "3"]
         | list[float]
         | dict[str, float]
         | float
@@ -251,14 +259,18 @@ class Head(RobotJointComponent):
             motion_norm = np.linalg.norm(joint_motion)
 
             if motion_norm < 1e-6:  # Avoid division by zero
-                return np.zeros(2, dtype=np.float32)
+                return np.zeros(3, dtype=np.float32)
 
-            # Scale velocities by default velocity
-            return (joint_motion / motion_norm) * self.default_vel
+            default_vel = (
+                2.5 if self._joint_vel_limit is None else np.min(self._joint_vel_limit)
+            )
+            return (joint_motion / motion_norm) * default_vel
 
         if isinstance(joint_vel, (int, float)):
             # Single value - apply to all joints
-            return np.full(2, joint_vel, dtype=np.float32)
+            return np.full(3, joint_vel, dtype=np.float32)
 
-        # Convert to array and clip to max velocity
-        return self._convert_joint_cmd_to_array(joint_vel, clip_value=self.max_vel)
+        # Convert to array and clip to velocity limits
+        return self._convert_joint_cmd_to_array(
+            joint_vel, clip_value=self._joint_vel_limit
+        )

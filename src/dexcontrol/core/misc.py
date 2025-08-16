@@ -95,6 +95,14 @@ class Battery(RobotComponent):
                 - power: Power consumption in Watts
         """
         state = self._get_state()
+        if state is None:
+            return {
+                "percentage": 0.0,
+                "temperature": 0.0,
+                "current": 0.0,
+                "voltage": 0.0,
+                "power": 0.0,
+            }
         return {
             "percentage": float(state.percentage),
             "temperature": float(state.temperature),
@@ -110,6 +118,11 @@ class Battery(RobotComponent):
         table = Table(title="Battery Status")
         table.add_column("Parameter", style="cyan")
         table.add_column("Value")
+
+        if state is None:
+            table.add_row("Status", "[red]No battery data available[/]")
+            self._console.print(table)
+            return
 
         battery_style = self._get_battery_level_style(state.percentage)
         table.add_row("Battery Level", f"[{battery_style}]{state.percentage:.1f}%[/]")
@@ -213,10 +226,14 @@ class EStop(RobotComponent):
             configs: EStop configuration containing subscription topics.
             zenoh_session: Active Zenoh session for communication.
         """
+        self._enabled = configs.enabled
         super().__init__(
             configs.state_sub_topic, zenoh_session, dexcontrol_msg_pb2.EStopState
         )
         self._estop_query_name = configs.estop_query_name
+        if not self._enabled:
+            logger.warning("EStop monitoring is DISABLED via configuration")
+            return
         self._shutdown_event = threading.Event()
         self._monitor_thread = threading.Thread(target=self._estop_monitor, daemon=True)
         self._monitor_thread.start()
@@ -264,6 +281,11 @@ class EStop(RobotComponent):
                 - software_estop_enabled: Software EStop enabled
         """
         state = self._get_state()
+        if state is None:
+            return {
+                "button_pressed": False,
+                "software_estop_enabled": False,
+            }
         return {
             "button_pressed": state.button_pressed,
             "software_estop_enabled": state.software_estop_enabled,
@@ -271,11 +293,13 @@ class EStop(RobotComponent):
 
     def is_button_pressed(self) -> bool:
         """Checks if the EStop button is pressed."""
-        return self._get_state().button_pressed
+        state = self._get_state()
+        return state.button_pressed if state is not None else False
 
     def is_software_estop_enabled(self) -> bool:
         """Checks if the software EStop is enabled."""
-        return self._get_state().software_estop_enabled
+        state = self._get_state()
+        return state.software_estop_enabled if state is not None else False
 
     def activate(self) -> None:
         """Activates the software emergency stop (E-Stop)."""
@@ -291,11 +315,12 @@ class EStop(RobotComponent):
 
     def shutdown(self) -> None:
         """Shuts down the EStop component and stops monitoring thread."""
-        self._shutdown_event.set()
-        if self._monitor_thread and self._monitor_thread.is_alive():
-            self._monitor_thread.join(timeout=2.0)  # Extended timeout
-            if self._monitor_thread.is_alive():
-                logger.warning("EStop monitor thread did not terminate cleanly")
+        if self._enabled:
+            self._shutdown_event.set()
+            if self._monitor_thread and self._monitor_thread.is_alive():
+                self._monitor_thread.join(timeout=2.0)  # Extended timeout
+                if self._monitor_thread.is_alive():
+                    logger.warning("EStop monitor thread did not terminate cleanly")
         super().shutdown()
 
     def show(self) -> None:
@@ -305,6 +330,12 @@ class EStop(RobotComponent):
         table = Table(title="E-Stop Status")
         table.add_column("Parameter", style="cyan")
         table.add_column("Value")
+
+        if state is None:
+            table.add_row("Status", "[red]No E-Stop data available[/]")
+            console = Console()
+            console.print(table)
+            return
 
         button_style = "bold red" if state.button_pressed else "bold dark_green"
         table.add_row("Button Pressed", f"[{button_style}]{state.button_pressed}[/]")
@@ -387,9 +418,12 @@ class Heartbeat:
         Returns:
             Decoded heartbeat timestamp value in seconds.
         """
-        timestamp = int.from_bytes(data.to_bytes(), byteorder="little")
-        # convert it from microseconds to seconds
-        return timestamp / 1000000.0
+        # Decode UTF-8 string and convert to float
+        # Publisher sends: str(self.timecount_now).encode() in milliseconds
+        timestamp_str = data.to_bytes().decode("utf-8")
+        timestamp_ms = float(timestamp_str)
+        # Convert from milliseconds to seconds
+        return timestamp_ms / 1000.0
 
     def _heartbeat_monitor(self) -> None:
         """Background thread that continuously monitors heartbeat signal."""
@@ -527,6 +561,52 @@ class Heartbeat:
             return False
         return self._subscriber.is_active()
 
+    @staticmethod
+    def _format_uptime(seconds: float) -> str:
+        """Convert seconds to human-readable uptime format with high resolution.
+
+        Args:
+            seconds: Total seconds of uptime.
+
+        Returns:
+            Human-readable string like "1mo 2d 3h 45m 12s 345ms".
+        """
+        # Calculate months (assuming 30 days per month)
+        months = int(seconds // (86400 * 30))
+        remaining = seconds % (86400 * 30)
+
+        # Calculate days
+        days = int(remaining // 86400)
+        remaining = remaining % 86400
+
+        # Calculate hours
+        hours = int(remaining // 3600)
+        remaining = remaining % 3600
+
+        # Calculate minutes
+        minutes = int(remaining // 60)
+        remaining = remaining % 60
+
+        # Calculate seconds and milliseconds
+        secs = int(remaining)
+        milliseconds = int((remaining - secs) * 1000)
+
+        parts = []
+        if months > 0:
+            parts.append(f"{months}mo")
+        if days > 0:
+            parts.append(f"{days}d")
+        if hours > 0:
+            parts.append(f"{hours}h")
+        if minutes > 0:
+            parts.append(f"{minutes}m")
+        if secs > 0:
+            parts.append(f"{secs}s")
+        if milliseconds > 0 or not parts:
+            parts.append(f"{milliseconds}ms")
+
+        return " ".join(parts)
+
     def shutdown(self) -> None:
         """Shuts down the heartbeat monitor and stops monitoring thread."""
         if not self._enabled:
@@ -567,12 +647,13 @@ class Heartbeat:
             active_style = "bold dark_green" if status["is_active"] else "bold red"
             table.add_row("Signal Active", f"[{active_style}]{status['is_active']}[/]")
 
-        # Last heartbeat value
+        # Last heartbeat value (robot uptime)
         last_value = status["last_value"]
         if last_value is not None:
-            table.add_row("Last Value", f"[blue]{last_value:.6f}s[/]")
+            uptime_str = self._format_uptime(last_value)
+            table.add_row("Robot server uptime", f"[blue]{uptime_str}[/]")
         else:
-            table.add_row("Last Value", "[red]No data[/]")
+            table.add_row("Robot server uptime", "[red]No data[/]")
 
         # Time since last heartbeat
         time_since = status["time_since_last"]

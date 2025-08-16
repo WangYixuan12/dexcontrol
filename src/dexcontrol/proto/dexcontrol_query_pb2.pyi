@@ -136,3 +136,27 @@ class ComponentStates(_message.Message):
     STATES_FIELD_NUMBER: _ClassVar[int]
     states: _containers.MessageMap[str, SingleComponentState]
     def __init__(self, states: _Optional[_Mapping[str, SingleComponentState]] = ...) -> None: ...
+
+class NTPRequest(_message.Message):
+    __slots__ = ("client_send_time_ns", "sample_count", "sample_index")
+    CLIENT_SEND_TIME_NS_FIELD_NUMBER: _ClassVar[int]
+    SAMPLE_COUNT_FIELD_NUMBER: _ClassVar[int]
+    SAMPLE_INDEX_FIELD_NUMBER: _ClassVar[int]
+    client_send_time_ns: int
+    sample_count: int
+    sample_index: int
+    def __init__(self, client_send_time_ns: _Optional[int] = ..., sample_count: _Optional[int] = ..., sample_index: _Optional[int] = ...) -> None: ...
+
+class NTPResponse(_message.Message):
+    __slots__ = ("client_send_time_ns", "server_receive_time_ns", "server_send_time_ns", "sample_index", "total_samples")
+    CLIENT_SEND_TIME_NS_FIELD_NUMBER: _ClassVar[int]
+    SERVER_RECEIVE_TIME_NS_FIELD_NUMBER: _ClassVar[int]
+    SERVER_SEND_TIME_NS_FIELD_NUMBER: _ClassVar[int]
+    SAMPLE_INDEX_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_SAMPLES_FIELD_NUMBER: _ClassVar[int]
+    client_send_time_ns: int
+    server_receive_time_ns: int
+    server_send_time_ns: int
+    sample_index: int
+    total_samples: int
+    def __init__(self, client_send_time_ns: _Optional[int] = ..., server_receive_time_ns: _Optional[int] = ..., server_send_time_ns: _Optional[int] = ..., sample_index: _Optional[int] = ..., total_samples: _Optional[int] = ...) -> None: ...

@@ -25,8 +25,8 @@ from dexcontrol.utils.rate_limiter import RateLimiter
 class JointTeleopNode(BaseArmTeleopNode):
     """Teleop node for controlling robot arm joints directly.
 
-    This class maps DualSense controller inputs to joint-level robot arm movements,
-    allowing precise control over individual joints of the robot.
+    This class maps DualSense controller inputs to joint-level robot arm
+    movements, allowing precise control over individual joints of the robot.
 
     Attributes:
         current_joint_idx: Index of the currently selected joint (0-6).
@@ -49,14 +49,14 @@ class JointTeleopNode(BaseArmTeleopNode):
             control_hz: Frequency of the control loop in Hz.
             button_update_hz: Frequency of button state updates in Hz.
             device_index: Index of the DualSense controller to use.
+            visualize: Whether to enable visualization.
         """
         super().__init__(control_hz, button_update_hz, device_index)
 
         # Constants
         self.MAX_JOINT_NUMBER = 6
         self.MIN_JOINT_NUMBER = 0
-        self.JOINT_STEP_SIZE = 0.15  # radians
-        self.MOTION_DURATION = 0.1  # seconds
+        self.JOINT_STEP_SIZE = 0.3  # radians
 
         self.arm_ik_controller = BaseIKController(self.bot, visualize=visualize)
         self.current_joint_idx = 0  # Initialize with joint 0 selected
@@ -70,7 +70,8 @@ class JointTeleopNode(BaseArmTeleopNode):
         """Set the current joint index.
 
         Args:
-            idx: Joint index to select (must be between MIN_JOINT_NUMBER and MAX_JOINT_NUMBER).
+            idx: Joint index to select (must be between MIN_JOINT_NUMBER and
+                MAX_JOINT_NUMBER).
         """
         if self.MIN_JOINT_NUMBER <= idx <= self.MAX_JOINT_NUMBER:
             self.current_joint_idx = idx
@@ -152,9 +153,9 @@ class JointTeleopNode(BaseArmTeleopNode):
         # Create joint position dictionary with the arm prefix
         arm_prefix = "L" if self.arm_side == "left" else "R"
         new_joint_pos_dict = {
-            f"{arm_prefix}_arm_j{self.current_joint_idx + 1}": new_position[
-                self.current_joint_idx
-            ]
+            f"{arm_prefix}_arm_j{self.current_joint_idx + 1}": (
+                new_position[self.current_joint_idx]
+            )
         }
 
         # Apply the change through IK
@@ -211,6 +212,7 @@ def main(
         control_hz: Frequency of the control loop in Hz.
         button_update_hz: Frequency of button state updates in Hz.
         device_index: Index of the DualSense controller to use.
+        visualize: Whether to enable visualization.
     """
     teleop_node = JointTeleopNode(
         control_hz=control_hz,

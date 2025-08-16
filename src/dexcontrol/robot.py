@@ -27,13 +27,7 @@ import signal
 import threading
 import time
 import weakref
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Final,
-    Literal,
-    cast,
-)
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 import hydra.utils
 import numpy as np
@@ -58,7 +52,12 @@ from dexcontrol.utils.pb_utils import (
 )
 from dexcontrol.utils.rate_limiter import RateLimiter
 from dexcontrol.utils.trajectory_utils import generate_linear_trajectory
-from dexcontrol.utils.viz_utils import show_component_status, show_software_version
+from dexcontrol.utils.viz_utils import (
+    show_component_status,
+    show_ntp_stats,
+    show_software_version,
+)
+from dexcontrol.utils.zenoh_utils import compute_ntp_stats
 
 if TYPE_CHECKING:
     from dexcontrol.core.arm import Arm
@@ -84,14 +83,25 @@ def _signal_handler(signum: int, frame: Any) -> None:
     logger.info(f"Received signal {signum}, shutting down all active robots...")
     # Create a list copy to avoid modification during iteration
     robots_to_shutdown = list(_active_robots)
+
+    # Set a total timeout for all shutdowns
+    shutdown_start = time.time()
+    max_shutdown_time = 5.0  # Maximum 5 seconds for all shutdowns
+
     for robot in robots_to_shutdown:
+        if time.time() - shutdown_start > max_shutdown_time:
+            logger.warning("Shutdown timeout reached, forcing exit")
+            break
+
         logger.info(f"Shutting down robot: {robot}")
         try:
             robot.shutdown()
         except Exception as e:  # pylint: disable=broad-except
             logger.error(f"Error during robot shutdown: {e}", exc_info=True)
+
     logger.info("All robots shutdown complete")
-    os._exit(1)
+    # Force exit to ensure the process terminates
+    os._exit(0)
 
 
 def _register_signal_handlers() -> None:
@@ -255,6 +265,23 @@ class Robot:
             self.shutdown()  # Clean up on initialization failure
             raise RuntimeError(f"Failed to initialize sensors: {e}") from e
 
+        # Check soc software version before proceeding
+        version_dict = self.get_software_version(show=False)
+        min_soc_version = dexcontrol.MIN_SOC_SOFTWARE_VERSION
+        soc_version = version_dict.get("soc", {}).get("software_version")
+        if soc_version is None:
+            logger.warning(
+                "Could not determine the software version of the remote driver ('soc'). "
+                "Please ensure the remote server is running and reachable."
+            )
+        elif soc_version < min_soc_version:
+            logger.warning(
+                f"The remote driver ('soc') software version is too old: {soc_version}. "
+                f"Minimum required version is {min_soc_version}.\n"
+                f"Please update the remote server or downgrade this project code to match the server version. "
+                f"Otherwise, some features may not work correctly or may encounter errors."
+            )
+
         # Set default modes
         try:
             self._set_default_modes()
@@ -303,10 +330,50 @@ class Robot:
     def __del__(self) -> None:
         """Destructor to ensure cleanup."""
         if not self._shutdown_called:
-            logger.warning(
-                "Robot instance being destroyed without explicit shutdown call"
+            # Only log if the logger is still available (process might be terminating)
+            try:
+                logger.warning(
+                    "Robot instance being destroyed without explicit shutdown call"
+                )
+                self.shutdown()
+            except Exception:  # pylint: disable=broad-except
+                # During interpreter shutdown, some modules might not be available
+                pass
+
+    @staticmethod
+    def cleanup_all() -> None:
+        """Force cleanup of all Zenoh resources and threads.
+
+        This method can be called between Robot instances to ensure a clean state.
+        It's especially useful when creating multiple Robot instances in the same script.
+
+        Example:
+            robot1 = Robot()
+            robot1.shutdown()
+            Robot.cleanup_all()  # Ensure clean state
+
+            robot2 = Robot()  # Safe to create new instance
+            robot2.shutdown()
+        """
+        import gc
+
+        # Force garbage collection to clean up any remaining resources
+        gc.collect()
+
+        # Give threads time to terminate
+        time.sleep(1.0)
+
+        # Log any remaining pyo3-closure threads
+        lingering = []
+        for thread in threading.enumerate():
+            if "pyo3-closure" in thread.name and thread.is_alive():
+                lingering.append(thread.name)
+
+        if lingering:
+            logger.debug(
+                f"Zenoh threads still active after cleanup: {lingering}. "
+                "This is normal and shouldn't affect new Robot instances."
             )
-            self.shutdown()
 
     def _print_initialization_info(self, robot_model: str | None) -> None:
         """Print initialization information.
@@ -339,30 +406,25 @@ class Robot:
             if component_name == "sensors":
                 continue
 
-            try:
-                component_config = getattr(self._configs, str(component_name))
-                if (
-                    not hasattr(component_config, "_target_")
-                    or not component_config._target_
-                ):
-                    continue
+            component_config = getattr(self._configs, str(component_name))
+            if (
+                not hasattr(component_config, "_target_")
+                or not component_config._target_
+            ):
+                continue
 
-                temp_config = omegaconf.OmegaConf.create(
-                    {
-                        "_target_": component_config._target_,
-                        "configs": {
-                            k: v for k, v in component_config.items() if k != "_target_"
-                        },
-                    }
-                )
-                component_instance = hydra.utils.instantiate(
-                    temp_config, zenoh_session=self._zenoh_session
-                )
-                setattr(self, str(component_name), component_instance)
-            except Exception as e:
-                raise RuntimeError(
-                    f"Failed to initialize component {component_name}: {e}"
-                ) from e
+            temp_config = omegaconf.OmegaConf.create(
+                {
+                    "_target_": component_config._target_,
+                    "configs": {
+                        k: v for k, v in component_config.items() if k != "_target_"
+                    },
+                }
+            )
+            component_instance = hydra.utils.instantiate(
+                temp_config, zenoh_session=self._zenoh_session
+            )
+            setattr(self, str(component_name), component_instance)
 
     def _set_default_modes(self) -> None:
         """Set default control modes for robot components.
@@ -372,21 +434,13 @@ class Robot:
         """
         for arm in ["left_arm", "right_arm"]:
             if component := getattr(self, arm, None):
-                try:
-                    component.set_mode("position")
-                except Exception as e:
-                    raise RuntimeError(
-                        f"Failed to set default mode for {arm}: {e}"
-                    ) from e
+                component.set_mode("position")
 
         if head := getattr(self, "head", None):
-            try:
-                head.set_mode("enable")
-                home_pos = head.get_predefined_pose("home")
-                home_pos = self.compensate_torso_pitch(home_pos, "head")
-                head.set_joint_pos(home_pos)
-            except Exception as e:
-                raise RuntimeError(f"Failed to set default mode for head: {e}") from e
+            head.set_mode("enable")
+            home_pos = head.get_predefined_pose("home")
+            home_pos = self.compensate_torso_pitch(home_pos, "head")
+            head.set_joint_pos(home_pos)
 
     def _wait_for_components(self) -> None:
         """Waits for all critical components to become active.
@@ -414,7 +468,7 @@ class Robot:
 
         console = Console()
         actives: list[bool] = []
-        timeout_sec: Final[int] = 8
+        timeout_sec: Final[float] = 5.0
         check_interval: Final[float] = 0.1  # Check every 100ms
 
         status = console.status(
@@ -445,7 +499,6 @@ class Robot:
 
                         # Check if we've exceeded timeout
                         if time.monotonic() - start_time >= timeout_sec:
-                            console.log(f"{name} failed to become active")
                             actives.append(False)
                             break
 
@@ -454,13 +507,18 @@ class Robot:
         finally:
             status.stop()
 
-        if not all(actives):
+        if not any(actives):
             self.shutdown()
+            raise RuntimeError(f"No components activated within {timeout_sec}s")
+
+        if not all(actives):
             inactive = [
                 name for name, active in zip(component_names, actives) if not active
             ]
-            raise RuntimeError(
-                f"Components failed to activate within {timeout_sec}s: {', '.join(inactive)}"
+            logger.error(
+                f"Components failed to activate within {timeout_sec}s: {', '.join(inactive)}.\n"
+                f"Other components may work, but some features, e.g. collision avoidance, may not work correctly."
+                f"Please check the robot status immediately."
             )
 
         logger.info("All components activated successfully")
@@ -560,35 +618,75 @@ class Robot:
 
         # Enhanced Zenoh session close with better synchronization
         zenoh_close_success = False
+        zenoh_close_exception = None
 
         def _close_zenoh_session():
             """Close zenoh session in a separate thread."""
-            nonlocal zenoh_close_success
+            nonlocal zenoh_close_success, zenoh_close_exception
             try:
                 # Brief delay for Zenoh cleanup
                 time.sleep(0.1)
                 self._zenoh_session.close()
                 zenoh_close_success = True
             except Exception as e:  # pylint: disable=broad-except
+                zenoh_close_exception = e
                 logger.warning(f"Zenoh session close error: {e}")
 
-        # Use non-daemon thread for proper cleanup
-        close_thread = threading.Thread(target=_close_zenoh_session, daemon=False)
+        # Try to close zenoh session with timeout
+        close_thread = threading.Thread(target=_close_zenoh_session, daemon=True)
         close_thread.start()
 
         # Wait for close with reasonable timeout
-        close_thread.join(timeout=3.0)
+        close_timeout = 2.0
+        close_thread.join(timeout=close_timeout)
 
         if close_thread.is_alive():
-            logger.warning(
-                "Zenoh session close timed out after 1s, continuing shutdown"
-            )
-            # Thread will be left to finish in background, but won't block shutdown
+            logger.warning(f"Zenoh session close timed out after {close_timeout}s")
+            # The thread is daemon, so it won't block the main thread
         elif zenoh_close_success:
             logger.debug("Zenoh session closed cleanly")
+        elif zenoh_close_exception:
+            logger.debug(
+                f"Zenoh session close completed with error: {zenoh_close_exception}"
+            )
 
-        # Brief final delay for cleanup
-        time.sleep(0.5)
+        # Give Zenoh threads more time to clean up properly
+        # This helps ensure threads terminate naturally
+        time.sleep(0.8)
+
+        # Check for lingering pyo3-closure threads
+        # These are internal Zenoh library threads
+        lingering_threads = []
+        for thread in threading.enumerate():
+            if (
+                "pyo3-closure" in thread.name
+                and thread.is_alive()
+                and not thread.daemon
+            ):
+                lingering_threads.append(thread.name)
+
+        if lingering_threads:
+            logger.debug(
+                f"Note: Zenoh library threads still active: {lingering_threads}. "
+                "These are internal library threads that should not prevent creating new Robot instances."
+            )
+
+            # If this is the last robot being shutdown and we're in the main module,
+            # help the script exit cleanly
+            import sys
+
+            if (
+                not _active_robots
+                and threading.current_thread() is threading.main_thread()
+            ):
+                # Check if we're likely at the end of the main script
+                frame = sys._getframe()
+                while frame.f_back:
+                    frame = frame.f_back
+                # If we're at the top level of a script (not in interactive mode)
+                if frame.f_code.co_name == "<module>" and not hasattr(sys, "ps1"):
+                    logger.debug("Main script ending, forcing clean exit")
+                    os._exit(0)
 
         logger.info("Robot shutdown complete")
 
@@ -599,6 +697,74 @@ class Robot:
             True if the robot has been shutdown, False otherwise.
         """
         return self._shutdown_called
+
+    def query_ntp(
+        self,
+        sample_count: int = 30,
+        show: bool = False,
+        timeout: float = 1.0,
+        device: Literal["soc", "jetson"] = "soc",
+    ) -> dict[Literal["success", "offset", "rtt"], bool | float]:
+        """Query the NTP server via zenoh for time synchronization and compute robust statistics.
+
+        Args:
+            sample_count: Number of NTP samples to request (default: 50).
+            show: Whether to print summary statistics using a rich table.
+            timeout: Timeout for the zenoh querier in seconds (default: 2.0).
+            device: Which device to query for NTP ("soc" or "jetson").
+
+        Returns:
+            Dictionary with keys:
+                - "success": True if any replies were received, False otherwise.
+                - "offset": Mean offset (in seconds) after removing RTT outliers.
+                - "rtt": Mean round-trip time (in seconds) after removing RTT outliers.
+        """
+        if device == "soc":
+            ntp_key = resolve_key_name(self._configs.soc_ntp_query_name)
+        elif device == "jetson":
+            raise NotImplementedError("Jetson NTP query is not implemented yet")
+        time_offset = []
+        time_rtt = []
+
+        querier = self._zenoh_session.declare_querier(ntp_key, timeout=timeout)
+        time.sleep(0.1)
+
+        reply_count = 0
+        for i in range(sample_count):
+            request = dexcontrol_query_pb2.NTPRequest()
+            request.client_send_time_ns = time.time_ns()
+            request.sample_count = sample_count
+            request.sample_index = i
+            replies = querier.get(payload=request.SerializeToString())
+
+            for reply in replies:
+                reply_count += 1
+                if reply.ok and reply.ok.payload:
+                    client_receive_time_ns = time.time_ns()
+                    response = dexcontrol_query_pb2.NTPResponse()
+                    response.ParseFromString(reply.ok.payload.to_bytes())
+                    t0 = request.client_send_time_ns
+                    t1 = response.server_receive_time_ns
+                    t2 = response.server_send_time_ns
+                    t3 = client_receive_time_ns
+                    offset = ((t1 - t0) + (t2 - t3)) // 2 / 1e9
+                    rtt = (t3 - t0) / 1e9
+                    time_offset.append(offset)
+                    time_rtt.append(rtt)
+            if i < sample_count - 1:
+                time.sleep(0.01)
+
+        querier.undeclare()
+        if reply_count == 0:
+            return {"success": False, "offset": 0, "rtt": 0}
+
+        stats = compute_ntp_stats(time_offset, time_rtt)
+        offset = stats["offset (mean)"]
+        rtt = stats["round_trip_time (mean)"]
+        if show:
+            show_ntp_stats(stats)
+
+        return {"success": True, "offset": offset, "rtt": rtt}
 
     def get_software_version(
         self, show: bool = True
@@ -727,9 +893,7 @@ class Robot:
             query_msg = dexcontrol_query_pb2.ClearError(component=component_map[part])
             self._zenoh_session.get(
                 resolve_key_name(self._configs.clear_error_query_name),
-                handler=lambda reply: logger.info(
-                    f"Cleared error of {part}: {reply.ok}"
-                ),
+                handler=lambda reply: logger.info(f"Cleared error of {part}"),
                 payload=query_msg.SerializeToString(),
             )
         except Exception as e:
@@ -1177,7 +1341,7 @@ class Robot:
             exit_on_reach_kwargs: Optional parameters for exit when the joint positions are reached.
         """
         control_hz = wait_kwargs.get("control_hz", self.left_arm._default_control_hz)
-        max_vel = wait_kwargs.get("max_vel", self.left_arm._default_max_vel)
+        max_vel = wait_kwargs.get("max_vel", self.left_arm._joint_vel_limit)
 
         # Generate trajectories for smooth motion during wait_time
         rate_limiter = RateLimiter(control_hz)

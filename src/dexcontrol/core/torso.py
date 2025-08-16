@@ -52,10 +52,15 @@ class Torso(RobotJointComponent):
             state_message_type=dexcontrol_msg_pb2.TorsoState,
             zenoh_session=zenoh_session,
             joint_name=configs.joint_name,
+            joint_limit=configs.joint_limit
+            if hasattr(configs, "joint_limit")
+            else None,
+            joint_vel_limit=configs.joint_vel_limit
+            if hasattr(configs, "joint_vel_limit")
+            else None,
             pose_pool=configs.pose_pool,
         )
-        self.default_vel = configs.default_vel
-        self.max_vel = configs.max_vel
+        assert self._joint_vel_limit is not None, "joint_vel_limit is not set"
 
     def set_joint_pos_vel(
         self,
@@ -103,6 +108,15 @@ class Torso(RobotJointComponent):
         # Convert inputs to numpy arrays
         joint_pos = self._convert_joint_cmd_to_array(joint_pos)
         joint_vel = self._process_joint_velocities(joint_vel, joint_pos)
+
+        if self._joint_limit is not None:
+            joint_pos = np.clip(
+                joint_pos, self._joint_limit[:, 0], self._joint_limit[:, 1]
+            )
+        if self._joint_vel_limit is not None:
+            joint_vel = np.clip(
+                joint_vel, -self._joint_vel_limit, self._joint_vel_limit
+            )
 
         # Create and send control message
         control_msg = dexcontrol_msg_pb2.TorsoCommand()
@@ -207,12 +221,16 @@ class Torso(RobotJointComponent):
             if motion_norm < 1e-6:  # Avoid division by zero
                 return np.zeros(3, dtype=np.float32)
 
-            # Scale velocities by default velocity
-            return (joint_motion / motion_norm) * self.default_vel
+            default_vel = (
+                0.6 if self._joint_vel_limit is None else np.min(self._joint_vel_limit)
+            )
+            return (joint_motion / motion_norm) * default_vel
 
         if isinstance(joint_vel, (int, float)):
             # Single value - apply to all joints
             return np.full(3, joint_vel, dtype=np.float32)
 
-        # Convert to array and clip to max velocity
-        return self._convert_joint_cmd_to_array(joint_vel, clip_value=self.max_vel)
+        # Convert to array and clip to velocity limits
+        return self._convert_joint_cmd_to_array(
+            joint_vel, clip_value=self._joint_vel_limit
+        )

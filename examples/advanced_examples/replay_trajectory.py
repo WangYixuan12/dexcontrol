@@ -1,0 +1,430 @@
+#!/usr/bin/env python3
+"""Simple trajectory replay script for robot control.
+
+Replays pre-recorded NPZ trajectory files with optional smoothing and velocity compensation.
+"""
+
+import argparse
+import time
+from pathlib import Path
+from typing import Dict, Optional
+
+import matplotlib.pyplot as plt
+import numpy as np
+from loguru import logger
+from scipy.ndimage import gaussian_filter1d
+
+from dexcontrol.robot import Robot
+from dexcontrol.utils.rate_limiter import RateLimiter
+
+
+def load_trajectory(filepath: Path) -> tuple[Dict[str, np.ndarray], float]:
+    """Load trajectory from NPZ file."""
+    if not filepath.exists():
+        raise FileNotFoundError(f"File not found: {filepath}")
+
+    data = np.load(filepath)
+    trajectory = {}
+    control_hz = 500.0  # default
+
+    for key in data.files:
+        if key in ["control_hz", "control_frequency"]:
+            control_hz = float(data[key].item())
+            logger.info(f"Found control frequency: {control_hz}Hz")
+        else:
+            trajectory[key] = data[key]
+            logger.info(f"Loaded {key}: shape {data[key].shape}")
+
+    return trajectory, control_hz
+
+
+def resample_trajectory(
+    trajectory: Dict[str, np.ndarray], speed_factor: float
+) -> Dict[str, np.ndarray]:
+    """Resample trajectory by speed factor (>1 = faster, <1 = slower)."""
+    if speed_factor == 1.0:
+        return trajectory
+
+    resampled = {}
+    for part, positions in trajectory.items():
+        old_len = len(positions)
+        new_len = int(np.ceil(old_len / speed_factor))
+        old_indices = np.linspace(0, old_len - 1, old_len)
+        new_indices = np.linspace(0, old_len - 1, new_len)
+
+        # Interpolate each joint
+        new_positions = np.zeros((new_len, positions.shape[1]))
+        for j in range(positions.shape[1]):
+            new_positions[:, j] = np.interp(new_indices, old_indices, positions[:, j])
+
+        resampled[part] = new_positions
+
+    return resampled
+
+
+def smooth_trajectory(
+    trajectory: Dict[str, np.ndarray], sigma_time: float, hz: float
+) -> Dict[str, np.ndarray]:
+    """Apply Gaussian smoothing to trajectory.
+
+    Args:
+        trajectory: Trajectory data
+        sigma_time: Smoothing window in seconds (e.g., 0.1 for 100ms window)
+        hz: Control frequency
+
+    Returns:
+        Smoothed trajectory
+    """
+    if sigma_time <= 0:
+        return trajectory
+
+    # Convert time-based sigma to sample-based sigma
+    # sigma_samples = sigma_time * hz
+    # For Gaussian filter, sigma is the standard deviation, so roughly 99.7% of
+    # the weight is within ±3*sigma samples
+    sigma_samples = sigma_time * hz
+
+    logger.info(
+        f"Smoothing with {sigma_time:.3f}s window = {sigma_samples:.1f} samples at {hz}Hz"
+    )
+
+    return {
+        part: gaussian_filter1d(positions, sigma=sigma_samples, axis=0, mode="nearest")
+        for part, positions in trajectory.items()
+    }
+
+
+def compute_velocities(
+    trajectory: Dict[str, np.ndarray], hz: float, smooth_time: float = 0.01
+) -> Dict[str, np.ndarray]:
+    """Compute velocities using finite differences.
+
+    Args:
+        trajectory: Position trajectory
+        hz: Control frequency
+        smooth_time: Smoothing window in seconds for velocity estimation
+
+    Returns:
+        Velocity trajectory
+    """
+    dt = 1.0 / hz
+    velocities = {}
+
+    for part, positions in trajectory.items():
+        if len(positions) < 2:
+            velocities[part] = np.zeros_like(positions)
+            continue
+
+        # Smooth before differentiation (convert time to samples)
+        if smooth_time > 0:
+            sigma_samples = smooth_time * hz
+            positions = gaussian_filter1d(
+                positions, sigma=sigma_samples, axis=0, mode="nearest"
+            )
+
+        # Compute velocities
+        vel = np.zeros_like(positions)
+        vel[0] = (positions[1] - positions[0]) / dt
+        vel[1:-1] = (positions[2:] - positions[:-2]) / (2 * dt)
+        vel[-1] = (positions[-1] - positions[-2]) / dt
+
+        velocities[part] = vel
+
+    return velocities
+
+
+def visualize_trajectory(
+    trajectory: Dict[str, np.ndarray],
+    velocities: Optional[Dict[str, np.ndarray]],
+    hz: float,
+) -> None:
+    """Visualize trajectory with separate figures for each part."""
+    # Set up time array
+    num_frames = len(next(iter(trajectory.values())))
+    time_array = np.arange(num_frames) / hz
+
+    # Define colors for different joints
+    colors = plt.cm.tab10(np.linspace(0, 1, 10))
+
+    # Create figures for each part
+    for part, positions in trajectory.items():
+        # Create figure with subplots if velocities available
+        if velocities and part in velocities:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))
+            fig.suptitle(
+                f"{part.upper()} - Trajectory Commands", fontsize=18, fontweight="bold"
+            )
+        else:
+            fig, ax1 = plt.subplots(1, 1, figsize=(14, 8))
+            fig.suptitle(
+                f"{part.upper()} - Position Commands", fontsize=18, fontweight="bold"
+            )
+
+        # Plot positions
+        num_joints = positions.shape[1]
+        for j in range(num_joints):
+            ax1.plot(
+                time_array,
+                positions[:, j],
+                color=colors[j % len(colors)],
+                linewidth=2,
+                label=f"Joint {j + 1}",
+                alpha=0.8,
+            )
+
+        ax1.set_title("Position Commands", fontsize=14)
+        ax1.set_xlabel("Time (s)", fontsize=12)
+        ax1.set_ylabel("Position (rad)", fontsize=12)
+        ax1.grid(True, alpha=0.3)
+        ax1.legend(loc="best", frameon=True, fancybox=True, shadow=True)
+
+        # Add min/max annotations
+        for j in range(min(num_joints, 3)):  # Limit annotations to avoid clutter
+            joint_data = positions[:, j]
+            min_idx = np.argmin(joint_data)
+            max_idx = np.argmax(joint_data)
+
+            # Annotate min
+            ax1.annotate(
+                f"J{j + 1}: {joint_data[min_idx]:.3f}",
+                xy=(time_array[min_idx], joint_data[min_idx]),
+                xytext=(5, -15),
+                textcoords="offset points",
+                fontsize=8,
+                alpha=0.7,
+                arrowprops=dict(arrowstyle="->", alpha=0.5),
+            )
+
+            # Annotate max
+            ax1.annotate(
+                f"J{j + 1}: {joint_data[max_idx]:.3f}",
+                xy=(time_array[max_idx], joint_data[max_idx]),
+                xytext=(5, 15),
+                textcoords="offset points",
+                fontsize=8,
+                alpha=0.7,
+                arrowprops=dict(arrowstyle="->", alpha=0.5),
+            )
+
+        # Plot velocities if available
+        if velocities and part in velocities:
+            vels = velocities[part]
+            for j in range(num_joints):
+                ax2.plot(
+                    time_array,
+                    vels[:, j],
+                    color=colors[j % len(colors)],
+                    linewidth=2,
+                    label=f"Joint {j + 1}",
+                    alpha=0.8,
+                )
+
+            ax2.set_title("Velocity Commands", fontsize=14)
+            ax2.set_xlabel("Time (s)", fontsize=12)
+            ax2.set_ylabel("Velocity (rad/s)", fontsize=12)
+            ax2.grid(True, alpha=0.3)
+            ax2.legend(loc="best", frameon=True, fancybox=True, shadow=True)
+
+            # Add zero line
+            ax2.axhline(y=0, color="black", linestyle="--", alpha=0.3)
+
+            # Add max velocity annotations
+            for j in range(min(num_joints, 3)):  # Limit annotations
+                vel_data = vels[:, j]
+                max_vel_idx = np.argmax(np.abs(vel_data))
+                ax2.annotate(
+                    f"J{j + 1}: {vel_data[max_vel_idx]:.3f}",
+                    xy=(time_array[max_vel_idx], vel_data[max_vel_idx]),
+                    xytext=(5, 10),
+                    textcoords="offset points",
+                    fontsize=8,
+                    alpha=0.7,
+                    arrowprops=dict(arrowstyle="->", alpha=0.5),
+                )
+
+        plt.tight_layout()
+
+    # Show all figures at once
+    plt.show()
+
+
+def replay_trajectory(
+    filepath: Path,
+    control_hz: Optional[float] = None,
+    gaussian_sigma: float = 0.0,
+    use_velocity: bool = False,
+    velocity_sigma: float = 1.0,
+    speed_factor: float = 1.0,
+    visualize: bool = False,
+):
+    """Main replay function."""
+    # Load trajectory
+    trajectory, file_hz = load_trajectory(filepath)
+    if not trajectory:
+        logger.error("Empty trajectory")
+        return
+
+    # Set control frequency
+    hz = control_hz or file_hz
+
+    # Get original number of frames and duration
+    original_frames = len(next(iter(trajectory.values())))
+    original_duration = original_frames / hz
+
+    # Apply speed factor by resampling
+    if speed_factor != 1.0:
+        logger.info(f"Applying speed factor {speed_factor}x")
+        trajectory = resample_trajectory(trajectory, speed_factor)
+
+    # Get actual number of frames after resampling
+    num_frames = len(next(iter(trajectory.values())))
+    duration = num_frames / hz
+
+    logger.info(f"Original: {original_frames} frames, {original_duration:.1f}s")
+    logger.info(f"Playback: {num_frames} frames @ {hz}Hz ({duration:.1f}s)")
+    logger.info(f"Parts: {', '.join(trajectory.keys())}")
+
+    # Apply smoothing
+    if gaussian_sigma > 0:
+        logger.info(f"Applying Gaussian smoothing (sigma={gaussian_sigma})")
+        trajectory = smooth_trajectory(trajectory, gaussian_sigma, hz)
+
+    # Compute velocities
+    velocities = None
+    if use_velocity:
+        logger.info(f"Computing velocities (sigma={velocity_sigma})")
+        velocities = compute_velocities(trajectory, hz, velocity_sigma)
+
+    # Visualize if requested
+    if visualize:
+        logger.info("Visualizing trajectory...")
+        visualize_trajectory(trajectory, velocities, hz)
+        if input("Continue with execution? [y/N]: ").lower() != "y":
+            logger.info("Execution cancelled")
+            return
+
+    # Initialize robot
+    robot = Robot()
+    rate_limiter = RateLimiter(rate_hz=hz)
+    robot.set_joint_pos(
+        {
+            "left_arm": robot.left_arm.get_predefined_pose("folded"),
+            "right_arm": robot.right_arm.get_predefined_pose("folded"),
+            "head": robot.head.get_predefined_pose("home"),
+        },
+        wait_time=5.0,
+        exit_on_reach=True,
+    )
+
+    if "left_hand" not in trajectory:
+        robot.left_hand.close_hand()
+    if "right_hand" not in trajectory:
+        robot.right_hand.close_hand()
+
+    # Move to start position
+    start_pos = {part: pos[0] for part, pos in trajectory.items()}
+    robot.set_joint_pos(start_pos, wait_time=3.0, exit_on_reach=True)
+    input("Press Enter to start...")
+
+    # Replay
+    try:
+        start_time = time.time()
+
+        for i in range(num_frames):
+            # Prepare frame data
+            frame_pos = {part: pos[i] for part, pos in trajectory.items()}
+
+            if use_velocity and velocities:
+                # Try position+velocity control for each part
+                for part, pos in frame_pos.items():
+                    component = getattr(robot, part)
+                    component.set_joint_pos_vel(pos, velocities[part][i])
+            else:
+                # Position-only control
+                robot.set_joint_pos(frame_pos, wait_time=0.0)
+
+            # Progress update every 2 seconds
+            if i % int(hz * 2) == 0:
+                elapsed = time.time() - start_time
+                progress = (i / num_frames) * 100
+                logger.info(f"Progress: {progress:.0f}% - Time: {elapsed:.1f}s")
+
+            rate_limiter.sleep()
+
+    except KeyboardInterrupt:
+        logger.info("Interrupted")
+
+    logger.info("Done")
+    robot.shutdown()
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Replay robot trajectory from NPZ file"
+    )
+    parser.add_argument("file", type=Path, help="NPZ trajectory file")
+    parser.add_argument(
+        "--hz", type=float, help="Control frequency (default: from file or 500Hz)"
+    )
+    parser.add_argument(
+        "--smooth",
+        type=float,
+        default=0.1,
+        help="Position smoothing time window in seconds (e.g., 0.1 for 100ms)",
+    )
+    parser.add_argument(
+        "--velocity", action="store_true", help="Use velocity compensation"
+    )
+    parser.add_argument(
+        "--vel-smooth",
+        type=float,
+        default=0.5,
+        help="Velocity smoothing time window in seconds (default: 0.05s = 50ms)",
+    )
+    parser.add_argument(
+        "--speed",
+        type=float,
+        default=1.0,
+        help="Speed factor (2=2x faster, 0.5=2x slower)",
+    )
+    parser.add_argument(
+        "--visualize", action="store_true", help="Visualize trajectory before execution"
+    )
+
+    args = parser.parse_args()
+    logger.warning(
+        "Warning: Be ready to press e-stop if needed! "
+        "This example does not check for self-collisions."
+    )
+    logger.warning(
+        "Please ensure the arms and the torso have sufficient space to move."
+    )
+    if input("Continue? [y/N]: ").lower() != "y":
+        return
+
+    if args.file.name == "vega-1_dance.npz" or args.file.name == "vega-rc2_dance.npz":
+        speed = np.clip(args.speed, 0.2, 3.0)
+        if speed != args.speed:
+            logger.warning(f"Speed factor clamped to {speed} (valid range: 0.2-3.0)")
+            args.speed = speed
+    else:
+        speed = args.speed
+
+    if speed > 3.0:
+        logger.warning("Speed factor is greater than 3.0!!! This can be dangerous!!!")
+        if input("Continue? [y/N]: ").lower() != "y":
+            return
+
+    replay_trajectory(
+        args.file,
+        control_hz=args.hz,
+        gaussian_sigma=args.smooth,
+        use_velocity=args.velocity,
+        velocity_sigma=args.vel_smooth,
+        speed_factor=speed,
+        visualize=args.visualize,
+    )
+
+
+if __name__ == "__main__":
+    main()

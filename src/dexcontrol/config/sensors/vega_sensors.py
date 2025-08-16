@@ -18,7 +18,7 @@ LiDAR and ultrasonic sensors.
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from .cameras import RGBCameraConfig, ZedCameraConfig
+from .cameras import LuxonisCameraConfig, RGBCameraConfig, ZedCameraConfig
 from .imu import ChassisIMUConfig, ZedIMUConfig
 from .lidar import RPLidarConfig
 from .ultrasonic import UltraSonicConfig
@@ -58,6 +58,12 @@ class VegaSensorsConfig:
     """
 
     head_camera: ZedCameraConfig = field(default_factory=ZedCameraConfig)
+    left_wrist_camera: LuxonisCameraConfig = field(
+        default_factory=lambda: LuxonisCameraConfig(name="left_wrist_camera")
+    )
+    right_wrist_camera: LuxonisCameraConfig = field(
+        default_factory=lambda: LuxonisCameraConfig(name="right_wrist_camera")
+    )
     base_left_camera: RGBCameraConfig = field(default_factory=_make_rgb_camera("left"))
     base_right_camera: RGBCameraConfig = field(
         default_factory=_make_rgb_camera("right")
@@ -73,6 +79,8 @@ class VegaSensorsConfig:
 
     def __post_init__(self) -> None:
         self.head_camera.enable = False
+        self.left_wrist_camera.enable = False
+        self.right_wrist_camera.enable = False
         self.base_left_camera.enable = False
         self.base_right_camera.enable = False
         self.base_front_camera.enable = False
