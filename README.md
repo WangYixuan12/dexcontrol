@@ -16,6 +16,17 @@ To run the examples in this repo, you can try:
 pip install dexcontrol[example]
 ```
 
+## ⚠️ Version Compatibility
+
+**Important:** `dexcontrol >= 0.3.0` requires robot firmware with SoC version `286` or higher.
+
+**Before upgrading, check your current firmware version:**
+```shell
+dextop firmware info
+```
+
+If your firmware is outdated, please update it before installing the new version to ensure full compatibility. Please contact the Dexmate team if you do not know how to do it.
+
 ## 📄 Licensing
 
 This project is **dual-licensed**:

@@ -39,18 +39,27 @@ def main() -> None:
                 bot.right_arm.get_joint_pos(),
                 bot.right_arm.get_timestamp_ns(),
             ),
-            "Left hand": (
-                bot.left_hand.get_joint_pos(),
-                bot.left_hand.get_timestamp_ns(),
-            ),
-            "Right hand": (
-                bot.right_hand.get_joint_pos(),
-                bot.right_hand.get_timestamp_ns(),
-            ),
             "Head": (bot.head.get_joint_pos(), bot.head.get_timestamp_ns()),
             "Torso": (bot.torso.get_joint_pos(), bot.torso.get_timestamp_ns()),
-            "Chassis": (bot.chassis.get_joint_pos(), bot.chassis.get_timestamp_ns()),
+            "Chassis_Steer": (
+                bot.chassis.chassis_steer.get_joint_pos(),
+                bot.chassis.chassis_steer.get_timestamp_ns(),
+            ),
+            "Chassis_Drive": (
+                bot.chassis.chassis_drive.get_joint_pos(),
+                bot.chassis.chassis_drive.get_timestamp_ns(),
+            ),
         }
+        if bot.have_hand("left"):
+            joint_positions["Left hand"] = (
+                bot.left_hand.get_joint_pos(),
+                bot.left_hand.get_timestamp_ns(),
+            )
+        if bot.have_hand("right"):
+            joint_positions["Right hand"] = (
+                bot.right_hand.get_joint_pos(),
+                bot.right_hand.get_timestamp_ns(),
+            )
 
         # Log joint positions
         for component, (position, timestamp) in joint_positions.items():

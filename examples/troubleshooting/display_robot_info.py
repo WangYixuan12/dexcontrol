@@ -33,7 +33,7 @@ def main() -> None:
     bot = Robot(configs=configs)
 
     # Display robot system information
-    bot.get_software_version(show=True)
+    bot.get_version_info(show=True)
     bot.get_component_status(show=True)
     bot.estop.show()
     bot.heartbeat.show()

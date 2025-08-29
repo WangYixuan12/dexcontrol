@@ -20,28 +20,6 @@ TYPE_SOFTWARE_VERSION = dict[
 ]
 
 
-def software_version_to_dict(
-    version_msg: dexcontrol_query_pb2.SoftwareVersion,
-) -> dict[str, TYPE_SOFTWARE_VERSION]:
-    """Convert a SoftwareVersion protobuf message to a dictionary.
-
-    Args:
-        version_msg: SoftwareVersion protobuf message.
-
-    Returns:
-        Dictionary containing version information with component names as keys.
-    """
-    return {
-        key: {
-            "hardware_version": value.hardware_version,
-            "software_version": value.software_version,
-            "main_hash": value.main_hash,
-            "compile_time": value.compile_time,
-        }
-        for key, value in version_msg.firmware_version.items()
-    }
-
-
 class ComponentStatus(Enum):
     """Enum representing the status of a component."""
 

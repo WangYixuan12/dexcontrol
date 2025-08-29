@@ -77,6 +77,7 @@ class VegaConfig:
         default_factory=lambda: HandConfig(
             state_sub_topic="state/hand/left",
             control_pub_topic="control/hand/left",
+            touch_sensor_sub_topic="state/hand/left/touch",
             joint_name=[
                 "L_th_j1",
                 "L_ff_j1",
@@ -91,6 +92,7 @@ class VegaConfig:
         default_factory=lambda: HandConfig(
             state_sub_topic="state/hand/right",
             control_pub_topic="control/hand/right",
+            touch_sensor_sub_topic="state/hand/right/touch",
             joint_name=[
                 "R_th_j1",
                 "R_ff_j1",
@@ -111,8 +113,9 @@ class VegaConfig:
     heartbeat: HeartbeatConfig = field(default_factory=HeartbeatConfig)
 
     # Queries
-    version_info_name: str = "info/version"
+    version_info_name: str = "info/versions"  # Updated to use JSON interface
     status_info_name: str = "info/status"
+    hand_info_query_name: str = "info/hand_type"
     reboot_query_name: str = "system/reboot"
     clear_error_query_name: str = "system/clear_error"
     led_query_name: str = "system/led"

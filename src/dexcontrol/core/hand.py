@@ -14,15 +14,22 @@ This module provides the Hand class for controlling a robotic hand through Zenoh
 communication. It handles joint position control and state monitoring.
 """
 
-from typing import Any
+from enum import Enum
+from typing import Any, cast
 
 import numpy as np
 import zenoh
 from jaxtyping import Float
 
 from dexcontrol.config.core.hand import HandConfig
-from dexcontrol.core.component import RobotJointComponent
+from dexcontrol.core.component import RobotComponent, RobotJointComponent
 from dexcontrol.proto import dexcontrol_msg_pb2
+
+
+class HandType(Enum):
+    UNKNOWN = "UNKNOWN"
+    HandF5D6_V1 = "HandF5D6_V1"
+    HandF5D6_V2 = "HandF5D6_V2"
 
 
 class Hand(RobotJointComponent):
@@ -36,6 +43,7 @@ class Hand(RobotJointComponent):
         self,
         configs: HandConfig,
         zenoh_session: zenoh.Session,
+        hand_type: HandType = HandType.HandF5D6_V1,
     ) -> None:
         """Initialize the hand controller.
 
@@ -47,7 +55,7 @@ class Hand(RobotJointComponent):
         super().__init__(
             state_sub_topic=configs.state_sub_topic,
             control_pub_topic=configs.control_pub_topic,
-            state_message_type=dexcontrol_msg_pb2.HandState,
+            state_message_type=dexcontrol_msg_pb2.MotorStateWithCurrent,
             zenoh_session=zenoh_session,
             joint_name=configs.joint_name,
         )
@@ -64,44 +72,10 @@ class Hand(RobotJointComponent):
         Args:
             joint_pos: Joint positions as list or numpy array.
         """
-        control_msg = dexcontrol_msg_pb2.HandCommand()
+        control_msg = dexcontrol_msg_pb2.MotorPosCommand()
         joint_pos_array = self._convert_joint_cmd_to_array(joint_pos)
-        control_msg.joint_pos.extend(joint_pos_array.tolist())
+        control_msg.pos.extend(joint_pos_array.tolist())
         self._publish_control(control_msg)
-
-    def set_joint_pos(
-        self,
-        joint_pos: Float[np.ndarray, " N"] | list[float] | dict[str, float],
-        relative: bool = False,
-        wait_time: float = 0.0,
-        wait_kwargs: dict[str, float] | None = None,
-        exit_on_reach: bool = False,
-        exit_on_reach_kwargs: dict[str, Any] | None = None,
-    ) -> None:
-        """Send joint position control commands to the hand.
-
-        Args:
-            joint_pos: Joint positions as either:
-                - List of joint values [j1, j2, ..., jN]
-                - Numpy array with shape (N,)
-                - Dictionary mapping joint names to position values
-            relative: If True, the joint positions are relative to the current position.
-            wait_time: Time to wait after setting the joint positions.
-            wait_kwargs: Optional parameters for trajectory generation (not used in Hand).
-            exit_on_reach: If True, the function will exit when the joint positions are reached.
-            exit_on_reach_kwargs: Optional parameters for exit when the joint positions are reached.
-
-        Raises:
-            ValueError: If joint_pos dictionary contains invalid joint names.
-        """
-        super().set_joint_pos(
-            joint_pos,
-            relative,
-            wait_time,
-            wait_kwargs,
-            exit_on_reach,
-            exit_on_reach_kwargs,
-        )
 
     def open_hand(
         self,
@@ -151,6 +125,37 @@ class HandF5D6(Hand):
     Extends the basic Hand class with additional control methods specific to
     the F5D6 hand model.
     """
+
+    def __init__(
+        self,
+        configs: HandConfig,
+        zenoh_session: zenoh.Session,
+        hand_type: HandType = HandType.HandF5D6_V1,
+    ) -> None:
+        super().__init__(configs, zenoh_session)
+
+        # Initialize touch sensor for F5D6_V2 hands
+        self._hand_type = hand_type
+        if self._hand_type == HandType.HandF5D6_V2:
+            self._touch_sensor = HandF5D6TouchSensor(
+                configs.touch_sensor_sub_topic, zenoh_session
+            )
+        elif self._hand_type == HandType.HandF5D6_V1:
+            self._touch_sensor = None
+        else:
+            raise ValueError(f"Invalid hand type: {self._hand_type}")
+
+    def get_finger_tip_force(self) -> Float[np.ndarray, "5"]:
+        """Get the force at the finger tips.
+
+        Returns:
+            Array of force values at the finger tips.
+        """
+        if self._touch_sensor is None:
+            raise ValueError(
+                f"Touch sensor not available for this hand type: {self._hand_type}"
+            )
+        return self._touch_sensor.get_fingertip_touch_net_force()
 
     def close_hand(
         self,
@@ -241,3 +246,33 @@ class HandF5D6(Hand):
             0
         ] * (1 - ratio)
         return intermediate_pos
+
+
+class HandF5D6TouchSensor(RobotComponent):
+    """Wrench sensor reader for the robot arm.
+
+    This class provides methods to read wrench sensor data through Zenoh communication.
+    """
+
+    def __init__(self, state_sub_topic: str, zenoh_session: zenoh.Session) -> None:
+        """Initialize the wrench sensor reader.
+
+        Args:
+            state_sub_topic: Topic to subscribe to for wrench sensor data.
+            zenoh_session: Active Zenoh communication session for message passing.
+        """
+        super().__init__(
+            state_sub_topic=state_sub_topic,
+            zenoh_session=zenoh_session,
+            state_message_type=dexcontrol_msg_pb2.HandTouchSensorState,
+        )
+
+    def get_fingertip_touch_net_force(self) -> Float[np.ndarray, "5"]:
+        """Get the complete wrench sensor state.
+
+        Returns:
+            Dictionary containing wrench values and button states.
+        """
+        state = self._get_state()
+        hand_touch_state = cast(dexcontrol_msg_pb2.HandTouchSensorState, state)
+        return np.array(hand_touch_state.force)

@@ -18,6 +18,7 @@ import time
 
 import numpy as np
 import zenoh
+from jaxtyping import Float
 
 from dexcontrol.config.core import ChassisConfig
 from dexcontrol.core.component import RobotJointComponent
@@ -25,7 +26,88 @@ from dexcontrol.proto import dexcontrol_msg_pb2
 from dexcontrol.utils.rate_limiter import RateLimiter
 
 
-class Chassis(RobotJointComponent):
+class ChassisSteer(RobotJointComponent):
+    """Robot hand control class.
+
+    This class provides methods to control a robotic hand by publishing commands and
+    receiving state information through Zenoh communication.
+    """
+
+    def __init__(
+        self,
+        configs: ChassisConfig,
+        zenoh_session: zenoh.Session,
+    ) -> None:
+        """Initialize the hand controller.
+
+        Args:
+            configs: Hand configuration parameters containing communication topics
+                and predefined hand positions.
+            zenoh_session: Active Zenoh communication session for message passing.
+        """
+        super().__init__(
+            state_sub_topic=configs.steer_state_sub_topic,
+            control_pub_topic=configs.steer_control_pub_topic,
+            state_message_type=dexcontrol_msg_pb2.MotorStateWithCurrent,
+            zenoh_session=zenoh_session,
+            joint_name=configs.steer_joint_name,
+        )
+
+    def _send_position_command(
+        self, joint_pos: Float[np.ndarray, " 2"] | list[float]
+    ) -> None:
+        """Send joint position control commands to the hand.
+
+        Args:
+            joint_pos: Joint positions as list or numpy array.
+        """
+        control_msg = dexcontrol_msg_pb2.MotorPosVelCommand()
+        joint_pos_array = self._convert_joint_cmd_to_array(joint_pos)
+        control_msg.pos.extend(joint_pos_array.tolist())
+        self._publish_control(control_msg)
+
+
+class ChassisDrive(RobotJointComponent):
+    """Robot base control class.
+
+    This class provides methods to control a robot's wheeled base by publishing commands
+    and receiving state information through Zenoh communication.
+    """
+
+    def __init__(
+        self,
+        configs: ChassisConfig,
+        zenoh_session: zenoh.Session,
+    ) -> None:
+        """Initialize the base controller.
+
+        Args:
+            configs: Base configuration parameters containing communication topics.
+            zenoh_session: Active Zenoh communication session for message passing.
+        """
+        super().__init__(
+            state_sub_topic=configs.drive_state_sub_topic,
+            control_pub_topic=configs.drive_control_pub_topic,
+            state_message_type=dexcontrol_msg_pb2.MotorStateWithCurrent,
+            zenoh_session=zenoh_session,
+            joint_name=configs.drive_joint_name,
+        )
+
+    def _send_position_command(
+        self, joint_pos: Float[np.ndarray, " 2"] | list[float]
+    ) -> None:
+        raise NotImplementedError("ChassisDrive does not support position control.")
+
+    def _send_velocity_command(
+        self, joint_vel: Float[np.ndarray, " 2"] | list[float]
+    ) -> None:
+        control_msg = dexcontrol_msg_pb2.MotorVelCommand()
+        joint_vel_array = self._convert_joint_cmd_to_array(joint_vel)
+        control_msg.vel.extend(joint_vel_array.tolist())
+        self._publish_control(control_msg)
+
+
+class Chassis:
     """Robot base control class.
 
     This class provides methods to control a robot's wheeled base by publishing commands
@@ -52,13 +134,9 @@ class Chassis(RobotJointComponent):
             configs: Base configuration parameters containing communication topics.
             zenoh_session: Active Zenoh communication session for message passing.
         """
-        super().__init__(
-            state_sub_topic=configs.state_sub_topic,
-            control_pub_topic=configs.control_pub_topic,
-            state_message_type=dexcontrol_msg_pb2.ChassisState,
-            zenoh_session=zenoh_session,
-            joint_name=configs.joint_name,
-        )
+        self.chassis_steer = ChassisSteer(configs, zenoh_session)
+        self.chassis_drive = ChassisDrive(configs, zenoh_session)
+
         self.max_vel = configs.max_vel
         self._center_to_wheel_axis_dist = configs.center_to_wheel_axis_dist
         self._wheels_dist = configs.wheels_dist
@@ -96,7 +174,8 @@ class Chassis(RobotJointComponent):
     def shutdown(self) -> None:
         """Shutdown the base by stopping all motion."""
         self.stop()
-        super().shutdown()
+        self.chassis_steer.shutdown()
+        self.chassis_drive.shutdown()
 
     @property
     def steering_angle(self) -> np.ndarray:
@@ -106,8 +185,7 @@ class Chassis(RobotJointComponent):
             Numpy array of shape (2,) containing current steering angles in radians.
             Index 0 is left wheel, index 1 is right wheel.
         """
-        state = self._get_state()
-        return np.array([state.left.steering_pos, state.right.steering_pos])
+        return self.chassis_steer.get_joint_pos()
 
     @property
     def wheel_velocity(self) -> np.ndarray:
@@ -117,8 +195,17 @@ class Chassis(RobotJointComponent):
             Numpy array of shape (2,) containing current wheel velocities in m/s.
             Index 0 is left wheel, index 1 is right wheel.
         """
-        state = self._get_state()
-        return np.array([state.left.wheel_vel, state.right.wheel_vel])
+        return self.chassis_drive.get_joint_vel()
+
+    @property
+    def wheel_encoder_pos(self) -> np.ndarray:
+        """Get current wheel encoder positions.
+
+        Returns:
+            Numpy array of shape (2,) containing current wheel encoder positions in radians.
+            Index 0 is left wheel, index 1 is right wheel.
+        """
+        return self.chassis_drive.get_joint_pos()
 
     def set_velocity(
         self,
@@ -356,24 +443,23 @@ class Chassis(RobotJointComponent):
         Args:
             joint_id: Optional ID(s) of specific joints to query.
                 0: left steering position
-                1: left wheel position
-                2: right steering position
+                1: right steering position
+                2: left wheel position
                 3: right wheel position
 
         Returns:
             Array of joint positions in the order:
-            [left_steering_pos, left_wheel_pos, right_steering_pos, right_wheel_pos]
+            [left_steering_pos, right_steering_pos, left_wheel_pos, right_wheel_pos]
         """
-        state = self._get_state()
-        joint_pos = np.array(
-            [
-                state.left.steering_pos,
-                state.left.wheel_pos,
-                state.right.steering_pos,
-                state.right.wheel_pos,
-            ]
-        )
-        return self._extract_joint_info(joint_pos, joint_id=joint_id)
+        steer_pos = self.chassis_steer.get_joint_pos()
+        drive_pos = self.chassis_drive.get_joint_pos()
+        joint_pos = np.concatenate([steer_pos, drive_pos])
+        return RobotJointComponent._extract_joint_info(joint_pos, joint_id=joint_id)
+
+    @property
+    def joint_name(self) -> list[str]:
+        """Get the joint names of the chassis."""
+        return self.chassis_steer.joint_name + self.chassis_drive.joint_name
 
     def get_joint_pos_dict(
         self, joint_id: list[int] | int | None = None
@@ -383,58 +469,22 @@ class Chassis(RobotJointComponent):
         Args:
             joint_id: Optional ID(s) of specific joints to query.
                 0: left steering position
-                1: left wheel position
-                2: right steering position
+                1: right steering position
+                2: left wheel position
                 3: right wheel position
 
         Returns:
             Dictionary mapping joint names to position values.
         """
-        values = self.get_joint_pos(joint_id)
-        return self._convert_to_dict(values, joint_id)
-
-    def get_joint_state(self, joint_id: list[int] | int | None = None) -> np.ndarray:
-        """Get current wheel states (left and right wheel).
-
-        Args:
-            joint_id: Optional ID(s) of specific joints to query.
-                0: left wheel
-                1: right wheel
-
-        Returns:
-            Numpy array containing:
-                [:, 0]: Current steering positions in radians
-                [:, 1]: Current wheel positions in radians
-                [:, 2]: Current wheel velocities in m/s
-        """
-        state = self._get_state()
-        wheel_states = np.array(
-            [
-                [state.left.steering_pos, state.left.wheel_pos, state.left.wheel_vel],
-                [
-                    state.right.steering_pos,
-                    state.right.wheel_pos,
-                    state.right.wheel_vel,
-                ],
-            ]
-        )
-        return self._extract_joint_info(wheel_states, joint_id=joint_id)
-
-    def get_joint_state_dict(
-        self, joint_id: list[int] | int | None = None
-    ) -> dict[str, np.ndarray]:
-        """Get current wheel states as a dictionary.
-
-        Args:
-            joint_id: Optional ID(s) of specific joints to query.
-                0: left wheel
-                1: right wheel
-
-        Returns:
-            Dictionary mapping joint names to arrays of [steering_pos, wheel_pos, wheel_vel]
-        """
-        values = self.get_joint_state(joint_id)
-        return self._convert_to_dict(values, joint_id)
+        steer_pos = self.chassis_steer.get_joint_pos_dict()
+        drive_pos = self.chassis_drive.get_joint_pos_dict()
+        if joint_id is None:
+            return {**steer_pos, **drive_pos}
+        else:
+            joint_names = self.joint_name
+            if isinstance(joint_id, int):
+                joint_id = [joint_id]
+            return {joint_names[i]: steer_pos[joint_names[i]] for i in joint_id}
 
     def set_motion_state(
         self,
@@ -527,10 +577,19 @@ class Chassis(RobotJointComponent):
         # Set default control frequency if not provided
         control_hz = wait_kwargs.get("control_hz", 50)
         rate_limiter = RateLimiter(control_hz)
-        start_time = time.time()
 
-        while time.time() - start_time < wait_time:
+        now_sec = time.monotonic()
+        duration_sec = max(wait_time - 1.0, 0.0)
+        end_time_sec = now_sec + duration_sec
+
+        while True:
+            # Ensure command is sent at least once
             self._send_single_command(steering_angle, wheel_velocity)
+
+            # Exit if we've reached the allotted duration
+            if time.monotonic() >= end_time_sec:
+                break
+
             rate_limiter.sleep()
 
     def _send_single_command(
@@ -544,24 +603,16 @@ class Chassis(RobotJointComponent):
             steering_angle: Target steering angles.
             wheel_velocity: Target wheel velocities.
         """
-        control_msg = dexcontrol_msg_pb2.ChassisCommand()
-        state = self._get_state()
+        if isinstance(steering_angle, float):
+            steering_angle = np.array([steering_angle, steering_angle])
+            self.chassis_steer._send_position_command(steering_angle)
+        elif isinstance(steering_angle, np.ndarray):
+            self.chassis_steer._send_position_command(steering_angle)
 
-        # Set steering positions and wheel velocities
-        control_msg.left.steering_pos = _get_value(
-            steering_angle, 0, "L_wheel_j1", state.left.steering_pos
-        )
-        control_msg.right.steering_pos = _get_value(
-            steering_angle, 1, "R_wheel_j1", state.right.steering_pos
-        )
-        control_msg.left.wheel_vel = _get_value(
-            wheel_velocity, 0, "L_wheel_j2", state.left.wheel_vel
-        )
-        control_msg.right.wheel_vel = _get_value(
-            wheel_velocity, 1, "R_wheel_j2", state.right.wheel_vel
-        )
-
-        self._publish_control(control_msg)
+        if isinstance(wheel_velocity, float):
+            wheel_velocity = np.array([wheel_velocity, wheel_velocity])
+        elif isinstance(wheel_velocity, np.ndarray):
+            self.chassis_drive._send_velocity_command(wheel_velocity)
 
     def _compute_wheel_control(
         self, wheel_velocity: np.ndarray, current_angle: float
@@ -608,26 +659,6 @@ class Chassis(RobotJointComponent):
 
         return steering_angle, wheel_speed
 
-
-def _get_value(
-    data: float | np.ndarray | dict[str, float],
-    idx: int,
-    key: str,
-    fallback: float,
-) -> float:
-    """Helper function to extract values with fallback to current state.
-
-    Args:
-        data: Input scalar, array or dictionary containing values.
-        idx: Index to access if data is array.
-        key: Key to access if data is dictionary.
-        fallback: Default value if key/index not found.
-
-    Returns:
-        Extracted float value.
-    """
-    if isinstance(data, dict):
-        return float(data.get(key, fallback))
-    if isinstance(data, (int, float)):
-        return float(data)
-    return float(data[idx])
+    def is_active(self) -> bool:
+        """Check if the chassis is active."""
+        return self.chassis_steer.is_active() and self.chassis_drive.is_active()

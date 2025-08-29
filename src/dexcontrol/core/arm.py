@@ -55,7 +55,7 @@ class Arm(RobotJointComponent):
         super().__init__(
             state_sub_topic=configs.state_sub_topic,
             control_pub_topic=configs.control_pub_topic,
-            state_message_type=dexcontrol_msg_pb2.ArmState,
+            state_message_type=dexcontrol_msg_pb2.MotorStateWithCurrent,
             zenoh_session=zenoh_session,
             joint_name=configs.joint_name,
             joint_limit=configs.joint_limit
@@ -97,6 +97,9 @@ class Arm(RobotJointComponent):
     def set_mode(self, mode: Literal["position", "disable"]) -> None:
         """Sets the operating mode of the arm.
 
+        .. deprecated::
+            Use set_modes() instead for setting arm modes.
+
         Args:
             mode: Operating mode for the arm. Must be either "position" or "disable".
                 "position": Enable position control
@@ -105,17 +108,35 @@ class Arm(RobotJointComponent):
         Raises:
             ValueError: If an invalid mode is specified.
         """
+        logger.warning("arm.set_mode() is deprecated, use set_modes() instead")
+        self.set_modes([mode] * 7)
+
+    def set_modes(self, modes: list[Literal["position", "disable", "release"]]) -> None:
+        """Sets the operating modes of the arm.
+
+        Args:
+            modes: List of operating modes for the arm. Each mode must be either "position", "disable", or "current".
+
+        Raises:
+            ValueError: If any mode in the list is invalid.
+        """
         mode_map = {
             "position": dexcontrol_query_pb2.SetArmMode.Mode.POSITION,
             "disable": dexcontrol_query_pb2.SetArmMode.Mode.DISABLE,
+            "release": dexcontrol_query_pb2.SetArmMode.Mode.CURRENT,
         }
 
-        if mode not in mode_map:
-            raise ValueError(
-                f"Invalid mode: {mode}. Must be one of {list(mode_map.keys())}"
-            )
+        for mode in modes:
+            if mode not in mode_map:
+                raise ValueError(
+                    f"Invalid mode: {mode}. Must be one of {list(mode_map.keys())}"
+                )
 
-        query_msg = dexcontrol_query_pb2.SetArmMode(mode=mode_map[mode])
+        if len(modes) != 7:
+            raise ValueError("Arm modes length must match arm DoF (7).")
+
+        converted_modes = [mode_map[mode] for mode in modes]
+        query_msg = dexcontrol_query_pb2.SetArmMode(modes=converted_modes)
         self.mode_querier.get(payload=query_msg.SerializeToString())
 
     def _send_position_command(self, joint_pos: np.ndarray) -> None:
@@ -124,8 +145,8 @@ class Arm(RobotJointComponent):
         Args:
             joint_pos: Joint positions as numpy array.
         """
-        control_msg = dexcontrol_msg_pb2.ArmCommand()
-        control_msg.joint_pos.extend(joint_pos.tolist())
+        control_msg = dexcontrol_msg_pb2.MotorPosVelCurrentCommand()
+        control_msg.pos.extend(joint_pos.tolist())
         self._publish_control(control_msg)
 
     def set_joint_pos(
@@ -287,10 +308,9 @@ class Arm(RobotJointComponent):
             joint_vel, clip_value=self._joint_vel_limit
         )
 
-        control_msg = dexcontrol_msg_pb2.ArmCommand(
-            command_type=dexcontrol_msg_pb2.ArmCommand.CommandType.VELOCITY_FEEDFORWARD,
-            joint_pos=list(target_pos),
-            joint_vel=list(target_vel),
+        control_msg = dexcontrol_msg_pb2.MotorPosVelCurrentCommand(
+            pos=list(target_pos),
+            vel=list(target_vel),
         )
         self._publish_control(control_msg)
 

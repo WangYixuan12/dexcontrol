@@ -25,49 +25,37 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x14\x64\x65xcontrol_msg.proto\x12\ndexcontrol\"l\n\x08\x41rmState\x12\x11\n\tjoint_pos\x18\x01 \x03(\x02\x12\x11\n\tjoint_vel\x18\x02 \x03(\x02\x12\x11\n\tjoint_cur\x18\x03 \x03(\x02\x12\x11\n\tjoint_err\x18\x04 \x03(\r\x12\x14\n\x0ctimestamp_ns\x18\x05 \x01(\x04\"\\\n\tHandState\x12\x11\n\tjoint_pos\x18\x01 \x03(\x02\x12\x11\n\tjoint_vel\x18\x02 \x03(\x02\x12\x13\n\x0bjoint_statu\x18\x03 \x03(\r\x12\x14\n\x0ctimestamp_ns\x18\x04 \x01(\x04\"G\n\tHeadState\x12\x11\n\tjoint_pos\x18\x01 \x03(\x02\x12\x11\n\tjoint_vel\x18\x02 \x03(\x02\x12\x14\n\x0ctimestamp_ns\x18\x03 \x01(\x04\"H\n\nTorsoState\x12\x11\n\tjoint_pos\x18\x01 \x03(\x02\x12\x11\n\tjoint_vel\x18\x02 \x03(\x02\x12\x14\n\x0ctimestamp_ns\x18\x03 \x01(\x04\"a\n\x10SingleWheelState\x12\x14\n\x0csteering_pos\x18\x01 \x01(\x02\x12\x11\n\twheel_pos\x18\x02 \x01(\x02\x12\x11\n\twheel_vel\x18\x03 \x01(\x02\x12\x11\n\twheel_cur\x18\x04 \x01(\x02\"}\n\x0c\x43hassisState\x12*\n\x04left\x18\x01 \x01(\x0b\x32\x1c.dexcontrol.SingleWheelState\x12+\n\x05right\x18\x02 \x01(\x0b\x32\x1c.dexcontrol.SingleWheelState\x12\x14\n\x0ctimestamp_ns\x18\x05 \x01(\x04\"\x8f\x01\n\x08\x42MSState\x12\x0f\n\x07voltage\x18\x01 \x01(\x02\x12\x0f\n\x07\x63urrent\x18\x02 \x01(\x02\x12\x13\n\x0btemperature\x18\x03 \x01(\x02\x12\x12\n\npercentage\x18\x04 \x01(\r\x12\x13\n\x0bis_charging\x18\x05 \x01(\x08\x12\r\n\x05\x65rror\x18\x06 \x01(\r\x12\x14\n\x0ctimestamp_ns\x18\x07 \x01(\x04\"^\n\x0bWrenchState\x12\x0e\n\x06wrench\x18\x01 \x03(\x02\x12\x13\n\x0b\x62lue_button\x18\x02 \x01(\x08\x12\x14\n\x0cgreen_button\x18\x03 \x01(\x08\x12\x14\n\x0ctimestamp_ns\x18\x04 \x01(\x04\"Z\n\nEStopState\x12\x16\n\x0e\x62utton_pressed\x18\x01 \x01(\x08\x12\x1e\n\x16software_estop_enabled\x18\x02 \x01(\x08\x12\x14\n\x0ctimestamp_ns\x18\x03 \x01(\x04\"w\n\x0fUltrasonicState\x12\x12\n\nfront_left\x18\x01 \x01(\x02\x12\x13\n\x0b\x66ront_right\x18\x02 \x01(\x02\x12\x11\n\tback_left\x18\x03 \x01(\x02\x12\x12\n\nback_right\x18\x04 \x01(\x02\x12\x14\n\x0ctimestamp_ns\x18\x05 \x01(\x04\"\xbd\x01\n\x08IMUState\x12\r\n\x05\x61\x63\x63_x\x18\x01 \x01(\x02\x12\r\n\x05\x61\x63\x63_y\x18\x02 \x01(\x02\x12\r\n\x05\x61\x63\x63_z\x18\x03 \x01(\x02\x12\x0e\n\x06gyro_x\x18\x04 \x01(\x02\x12\x0e\n\x06gyro_y\x18\x05 \x01(\x02\x12\x0e\n\x06gyro_z\x18\x06 \x01(\x02\x12\x0e\n\x06quat_w\x18\x07 \x01(\x02\x12\x0e\n\x06quat_x\x18\x08 \x01(\x02\x12\x0e\n\x06quat_y\x18\t \x01(\x02\x12\x0e\n\x06quat_z\x18\n \x01(\x02\x12\x14\n\x0ctimestamp_ns\x18\x0b \x01(\x04\"\xa3\x01\n\nArmCommand\x12\x38\n\x0c\x63ommand_type\x18\x01 \x01(\x0e\x32\".dexcontrol.ArmCommand.CommandType\x12\x11\n\tjoint_pos\x18\x02 \x03(\x02\x12\x11\n\tjoint_vel\x18\x03 \x03(\x02\"5\n\x0b\x43ommandType\x12\x0c\n\x08POSITION\x10\x00\x12\x18\n\x14VELOCITY_FEEDFORWARD\x10\x01\" \n\x0bHandCommand\x12\x11\n\tjoint_pos\x18\x01 \x03(\x02\"3\n\x0bHeadCommand\x12\x11\n\tjoint_pos\x18\x01 \x03(\x02\x12\x11\n\tjoint_vel\x18\x02 \x03(\x02\"4\n\x0cTorsoCommand\x12\x11\n\tjoint_pos\x18\x01 \x03(\x02\x12\x11\n\tjoint_vel\x18\x02 \x03(\x02\"=\n\x12SingleWheelCommand\x12\x14\n\x0csteering_pos\x18\x01 \x01(\x02\x12\x11\n\twheel_vel\x18\x02 \x01(\x02\"m\n\x0e\x43hassisCommand\x12,\n\x04left\x18\x01 \x01(\x0b\x32\x1e.dexcontrol.SingleWheelCommand\x12-\n\x05right\x18\x02 \x01(\x0b\x32\x1e.dexcontrol.SingleWheelCommand\"-\n\x1d\x45ndEffectorPassThroughCommand\x12\x0c\n\x04\x64\x61ta\x18\x01 \x01(\x0c\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x14\x64\x65xcontrol_msg.proto\x12\ndexcontrol\"e\n\x14MotorStateWithTorque\x12\x0b\n\x03pos\x18\x01 \x03(\x02\x12\x0b\n\x03vel\x18\x02 \x03(\x02\x12\x0e\n\x06torque\x18\x03 \x03(\x02\x12\r\n\x05\x65rror\x18\x04 \x03(\r\x12\x14\n\x0ctimestamp_ns\x18\x05 \x01(\x04\"c\n\x15MotorStateWithCurrent\x12\x0b\n\x03pos\x18\x01 \x03(\x02\x12\x0b\n\x03vel\x18\x02 \x03(\x02\x12\x0b\n\x03\x63ur\x18\x03 \x03(\x02\x12\r\n\x05\x65rror\x18\x04 \x03(\r\x12\x14\n\x0ctimestamp_ns\x18\x05 \x01(\x04\"4\n\x0fMotorPosCommand\x12\x0b\n\x03pos\x18\x01 \x03(\x02\x12\x14\n\x0ctimestamp_ns\x18\x02 \x01(\x04\"4\n\x0fMotorVelCommand\x12\x0b\n\x03vel\x18\x01 \x03(\x02\x12\x14\n\x0ctimestamp_ns\x18\x02 \x01(\x04\"D\n\x12MotorPosVelCommand\x12\x0b\n\x03pos\x18\x01 \x03(\x02\x12\x0b\n\x03vel\x18\x02 \x03(\x02\x12\x14\n\x0ctimestamp_ns\x18\x03 \x01(\x04\"X\n\x19MotorPosVelCurrentCommand\x12\x0b\n\x03pos\x18\x01 \x03(\x02\x12\x0b\n\x03vel\x18\x02 \x03(\x02\x12\x0b\n\x03\x63ur\x18\x03 \x03(\x02\x12\x14\n\x0ctimestamp_ns\x18\x04 \x01(\x04\"C\n\x1d\x45ndEffectorPassThroughCommand\x12\x0c\n\x04\x64\x61ta\x18\x01 \x01(\x0c\x12\x14\n\x0ctimestamp_ns\x18\x02 \x01(\x04\"\x8f\x01\n\x08\x42MSState\x12\x0f\n\x07voltage\x18\x01 \x01(\x02\x12\x0f\n\x07\x63urrent\x18\x02 \x01(\x02\x12\x13\n\x0btemperature\x18\x03 \x01(\x02\x12\x12\n\npercentage\x18\x04 \x01(\r\x12\x13\n\x0bis_charging\x18\x05 \x01(\x08\x12\r\n\x05\x65rror\x18\x06 \x01(\r\x12\x14\n\x0ctimestamp_ns\x18\x07 \x01(\x04\"^\n\x0bWrenchState\x12\x0e\n\x06wrench\x18\x01 \x03(\x02\x12\x13\n\x0b\x62lue_button\x18\x02 \x01(\x08\x12\x14\n\x0cgreen_button\x18\x03 \x01(\x08\x12\x14\n\x0ctimestamp_ns\x18\x04 \x01(\x04\"\xbc\x01\n\nEStopState\x12\x1e\n\x16software_estop_enabled\x18\x01 \x01(\x08\x12\x1b\n\x13left_button_pressed\x18\x02 \x01(\x08\x12\x1c\n\x14right_button_pressed\x18\x03 \x01(\x08\x12\x1c\n\x14waist_button_pressed\x18\x04 \x01(\x08\x12\x1f\n\x17wireless_button_pressed\x18\x05 \x01(\x08\x12\x14\n\x0ctimestamp_ns\x18\x06 \x01(\x04\"w\n\x0fUltrasonicState\x12\x12\n\nfront_left\x18\x01 \x01(\x02\x12\x13\n\x0b\x66ront_right\x18\x02 \x01(\x02\x12\x11\n\tback_left\x18\x03 \x01(\x02\x12\x12\n\nback_right\x18\x04 \x01(\x02\x12\x14\n\x0ctimestamp_ns\x18\x05 \x01(\x04\"\xbd\x01\n\x08IMUState\x12\r\n\x05\x61\x63\x63_x\x18\x01 \x01(\x02\x12\r\n\x05\x61\x63\x63_y\x18\x02 \x01(\x02\x12\r\n\x05\x61\x63\x63_z\x18\x03 \x01(\x02\x12\x0e\n\x06gyro_x\x18\x04 \x01(\x02\x12\x0e\n\x06gyro_y\x18\x05 \x01(\x02\x12\x0e\n\x06gyro_z\x18\x06 \x01(\x02\x12\x0e\n\x06quat_w\x18\x07 \x01(\x02\x12\x0e\n\x06quat_x\x18\x08 \x01(\x02\x12\x0e\n\x06quat_y\x18\t \x01(\x02\x12\x0e\n\x06quat_z\x18\n \x01(\x02\x12\x14\n\x0ctimestamp_ns\x18\x0b \x01(\x04\";\n\x14HandTouchSensorState\x12\r\n\x05\x66orce\x18\x01 \x03(\x02\x12\x14\n\x0ctimestamp_ns\x18\x02 \x01(\x04\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'dexcontrol_msg_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_ARMSTATE']._serialized_start=36
-  _globals['_ARMSTATE']._serialized_end=144
-  _globals['_HANDSTATE']._serialized_start=146
-  _globals['_HANDSTATE']._serialized_end=238
-  _globals['_HEADSTATE']._serialized_start=240
-  _globals['_HEADSTATE']._serialized_end=311
-  _globals['_TORSOSTATE']._serialized_start=313
-  _globals['_TORSOSTATE']._serialized_end=385
-  _globals['_SINGLEWHEELSTATE']._serialized_start=387
-  _globals['_SINGLEWHEELSTATE']._serialized_end=484
-  _globals['_CHASSISSTATE']._serialized_start=486
-  _globals['_CHASSISSTATE']._serialized_end=611
-  _globals['_BMSSTATE']._serialized_start=614
-  _globals['_BMSSTATE']._serialized_end=757
-  _globals['_WRENCHSTATE']._serialized_start=759
-  _globals['_WRENCHSTATE']._serialized_end=853
-  _globals['_ESTOPSTATE']._serialized_start=855
-  _globals['_ESTOPSTATE']._serialized_end=945
-  _globals['_ULTRASONICSTATE']._serialized_start=947
-  _globals['_ULTRASONICSTATE']._serialized_end=1066
-  _globals['_IMUSTATE']._serialized_start=1069
-  _globals['_IMUSTATE']._serialized_end=1258
-  _globals['_ARMCOMMAND']._serialized_start=1261
-  _globals['_ARMCOMMAND']._serialized_end=1424
-  _globals['_ARMCOMMAND_COMMANDTYPE']._serialized_start=1371
-  _globals['_ARMCOMMAND_COMMANDTYPE']._serialized_end=1424
-  _globals['_HANDCOMMAND']._serialized_start=1426
-  _globals['_HANDCOMMAND']._serialized_end=1458
-  _globals['_HEADCOMMAND']._serialized_start=1460
-  _globals['_HEADCOMMAND']._serialized_end=1511
-  _globals['_TORSOCOMMAND']._serialized_start=1513
-  _globals['_TORSOCOMMAND']._serialized_end=1565
-  _globals['_SINGLEWHEELCOMMAND']._serialized_start=1567
-  _globals['_SINGLEWHEELCOMMAND']._serialized_end=1628
-  _globals['_CHASSISCOMMAND']._serialized_start=1630
-  _globals['_CHASSISCOMMAND']._serialized_end=1739
-  _globals['_ENDEFFECTORPASSTHROUGHCOMMAND']._serialized_start=1741
-  _globals['_ENDEFFECTORPASSTHROUGHCOMMAND']._serialized_end=1786
+  _globals['_MOTORSTATEWITHTORQUE']._serialized_start=36
+  _globals['_MOTORSTATEWITHTORQUE']._serialized_end=137
+  _globals['_MOTORSTATEWITHCURRENT']._serialized_start=139
+  _globals['_MOTORSTATEWITHCURRENT']._serialized_end=238
+  _globals['_MOTORPOSCOMMAND']._serialized_start=240
+  _globals['_MOTORPOSCOMMAND']._serialized_end=292
+  _globals['_MOTORVELCOMMAND']._serialized_start=294
+  _globals['_MOTORVELCOMMAND']._serialized_end=346
+  _globals['_MOTORPOSVELCOMMAND']._serialized_start=348
+  _globals['_MOTORPOSVELCOMMAND']._serialized_end=416
+  _globals['_MOTORPOSVELCURRENTCOMMAND']._serialized_start=418
+  _globals['_MOTORPOSVELCURRENTCOMMAND']._serialized_end=506
+  _globals['_ENDEFFECTORPASSTHROUGHCOMMAND']._serialized_start=508
+  _globals['_ENDEFFECTORPASSTHROUGHCOMMAND']._serialized_end=575
+  _globals['_BMSSTATE']._serialized_start=578
+  _globals['_BMSSTATE']._serialized_end=721
+  _globals['_WRENCHSTATE']._serialized_start=723
+  _globals['_WRENCHSTATE']._serialized_end=817
+  _globals['_ESTOPSTATE']._serialized_start=820
+  _globals['_ESTOPSTATE']._serialized_end=1008
+  _globals['_ULTRASONICSTATE']._serialized_start=1010
+  _globals['_ULTRASONICSTATE']._serialized_end=1129
+  _globals['_IMUSTATE']._serialized_start=1132
+  _globals['_IMUSTATE']._serialized_end=1321
+  _globals['_HANDTOUCHSENSORSTATE']._serialized_start=1323
+  _globals['_HANDTOUCHSENSORSTATE']._serialized_end=1382
 # @@protoc_insertion_point(module_scope)

@@ -223,8 +223,10 @@ def main(
 
     # Open robot hands
     logger.info("Opening robot hands...")
-    teleop_node.bot.left_hand.open_hand()
-    teleop_node.bot.right_hand.open_hand()
+    if teleop_node.bot.have_hand("left"):
+        teleop_node.bot.left_hand.open_hand()
+    if teleop_node.bot.have_hand("right"):
+        teleop_node.bot.right_hand.open_hand()
 
     # Start the teleop loop
     teleop_node.all_time_loop()

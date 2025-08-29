@@ -1,3 +1,4 @@
+from collections.abc import Iterable as _Iterable
 from collections.abc import Mapping as _Mapping
 from typing import ClassVar as _ClassVar
 from typing import Optional as _Optional
@@ -20,19 +21,29 @@ NA: ComponentStatus
 ERROR: ComponentStatus
 
 class SetArmMode(_message.Message):
-    __slots__ = ("mode",)
+    __slots__ = ("mode", "modes")
     class Mode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
         __slots__ = ()
         POSITION: _ClassVar[SetArmMode.Mode]
         DISABLE: _ClassVar[SetArmMode.Mode]
+        CURRENT: _ClassVar[SetArmMode.Mode]
+        VELOCITY: _ClassVar[SetArmMode.Mode]
+        ENABLE: _ClassVar[SetArmMode.Mode]
+        CALIBRATION: _ClassVar[SetArmMode.Mode]
     POSITION: SetArmMode.Mode
     DISABLE: SetArmMode.Mode
+    CURRENT: SetArmMode.Mode
+    VELOCITY: SetArmMode.Mode
+    ENABLE: SetArmMode.Mode
+    CALIBRATION: SetArmMode.Mode
     MODE_FIELD_NUMBER: _ClassVar[int]
+    MODES_FIELD_NUMBER: _ClassVar[int]
     mode: SetArmMode.Mode
-    def __init__(self, mode: _Optional[_Union[SetArmMode.Mode, str]] = ...) -> None: ...
+    modes: _containers.RepeatedScalarFieldContainer[SetArmMode.Mode]
+    def __init__(self, mode: _Optional[_Union[SetArmMode.Mode, str]] = ..., modes: _Optional[_Iterable[_Union[SetArmMode.Mode, str]]] = ...) -> None: ...
 
 class SetHeadMode(_message.Message):
-    __slots__ = ("mode",)
+    __slots__ = ("mode", "modes")
     class Mode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
         __slots__ = ()
         ENABLE: _ClassVar[SetHeadMode.Mode]
@@ -40,8 +51,10 @@ class SetHeadMode(_message.Message):
     ENABLE: SetHeadMode.Mode
     DISABLE: SetHeadMode.Mode
     MODE_FIELD_NUMBER: _ClassVar[int]
+    MODES_FIELD_NUMBER: _ClassVar[int]
     mode: SetHeadMode.Mode
-    def __init__(self, mode: _Optional[_Union[SetHeadMode.Mode, str]] = ...) -> None: ...
+    modes: _containers.RepeatedScalarFieldContainer[SetHeadMode.Mode]
+    def __init__(self, mode: _Optional[_Union[SetHeadMode.Mode, str]] = ..., modes: _Optional[_Iterable[_Union[SetHeadMode.Mode, str]]] = ...) -> None: ...
 
 class SetEstop(_message.Message):
     __slots__ = ("enable",)

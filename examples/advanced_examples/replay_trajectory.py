@@ -306,6 +306,18 @@ def replay_trajectory(
     # Initialize robot
     robot = Robot()
     rate_limiter = RateLimiter(rate_hz=hz)
+    logger.warning("Setting joint positions...")
+    logger.warning("Press e-stop if needed!")
+    logger.warning(
+        "Please ensure the arms and the torso have sufficient space to move."
+    )
+    logger.warning(
+        "Will move the left arm to folded, the right arm to folded, and the head to home pose, then the torso to crouch20_medium."
+    )
+    if input("Continue? [y/N]: ").lower() != "y":
+        logger.info("Execution cancelled")
+        return
+
     robot.set_joint_pos(
         {
             "left_arm": robot.left_arm.get_predefined_pose("folded"),
@@ -315,16 +327,17 @@ def replay_trajectory(
         wait_time=5.0,
         exit_on_reach=True,
     )
+    robot.torso.go_to_pose("crouch20_medium", wait_time=5.0, exit_on_reach=True)
 
-    if "left_hand" not in trajectory:
+    if robot.have_hand("left"):
         robot.left_hand.close_hand()
-    if "right_hand" not in trajectory:
+    if robot.have_hand("right"):
         robot.right_hand.close_hand()
 
+    input("Press Enter to start the replay...")
     # Move to start position
     start_pos = {part: pos[0] for part, pos in trajectory.items()}
     robot.set_joint_pos(start_pos, wait_time=3.0, exit_on_reach=True)
-    input("Press Enter to start...")
 
     # Replay
     try:

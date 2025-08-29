@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import signal
+import sys
 import threading
 import time
 import weakref
@@ -40,24 +41,19 @@ from rich.table import Table
 import dexcontrol
 from dexcontrol.config.vega import VegaConfig, get_vega_config
 from dexcontrol.core.component import RobotComponent
-from dexcontrol.proto import dexcontrol_query_pb2
+from dexcontrol.core.hand import HandType
+from dexcontrol.core.misc import ServerLogSubscriber
+from dexcontrol.core.robot_query_interface import RobotQueryInterface
 from dexcontrol.sensors import Sensors
 from dexcontrol.utils.constants import ROBOT_NAME_ENV_VAR
-from dexcontrol.utils.os_utils import get_robot_model, resolve_key_name
-from dexcontrol.utils.pb_utils import (
-    TYPE_SOFTWARE_VERSION,
-    ComponentStatus,
-    software_version_to_dict,
-    status_to_dict,
-)
+from dexcontrol.utils.os_utils import check_version_compatibility, get_robot_model
 from dexcontrol.utils.rate_limiter import RateLimiter
 from dexcontrol.utils.trajectory_utils import generate_linear_trajectory
-from dexcontrol.utils.viz_utils import (
-    show_component_status,
-    show_ntp_stats,
-    show_software_version,
+from dexcontrol.utils.zenoh_utils import (
+    close_zenoh_session_with_timeout,
+    create_zenoh_session,
+    wait_for_zenoh_cleanup,
 )
-from dexcontrol.utils.zenoh_utils import compute_ntp_stats
 
 if TYPE_CHECKING:
     from dexcontrol.core.arm import Arm
@@ -73,66 +69,25 @@ _active_robots: weakref.WeakSet[Robot] = weakref.WeakSet()
 _signal_handlers_registered: bool = False
 
 
-def _signal_handler(signum: int, frame: Any) -> None:
-    """Signal handler to shutdown all active Robot instances.
-
-    Args:
-        signum: Signal number received (e.g., SIGINT, SIGTERM).
-        frame: Current stack frame (unused).
-    """
-    logger.info(f"Received signal {signum}, shutting down all active robots...")
-    # Create a list copy to avoid modification during iteration
-    robots_to_shutdown = list(_active_robots)
-
-    # Set a total timeout for all shutdowns
-    shutdown_start = time.time()
-    max_shutdown_time = 5.0  # Maximum 5 seconds for all shutdowns
-
-    for robot in robots_to_shutdown:
-        if time.time() - shutdown_start > max_shutdown_time:
-            logger.warning("Shutdown timeout reached, forcing exit")
-            break
-
-        logger.info(f"Shutting down robot: {robot}")
-        try:
-            robot.shutdown()
-        except Exception as e:  # pylint: disable=broad-except
-            logger.error(f"Error during robot shutdown: {e}", exc_info=True)
-
-    logger.info("All robots shutdown complete")
-    # Force exit to ensure the process terminates
-    os._exit(0)
-
-
 def _register_signal_handlers() -> None:
-    """Register signal handlers for graceful shutdown.
-
-    This function ensures signal handlers are registered only once and sets up
-    handlers for SIGINT (Ctrl+C), SIGTERM, and SIGHUP (on Unix systems).
-    """
+    """Register signal handlers for graceful shutdown."""
     global _signal_handlers_registered
     if _signal_handlers_registered:
         return
 
-    # Register handlers for common termination signals
-    signal.signal(signal.SIGINT, _signal_handler)  # Ctrl+C
-    signal.signal(signal.SIGTERM, _signal_handler)  # Termination signal
+    def signal_handler(signum: int, frame: Any) -> None:
+        sys.exit(0)
 
-    # On Unix systems, also handle SIGHUP
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
     if hasattr(signal, "SIGHUP"):
-        signal.signal(signal.SIGHUP, _signal_handler)
+        signal.signal(signal.SIGHUP, signal_handler)
 
     _signal_handlers_registered = True
 
 
-class ComponentConfig(omegaconf.DictConfig):
-    """Type hints for component configuration."""
-
-    _target_: str
-    configs: dict[str, Any]
-
-
-class Robot:
+class Robot(RobotQueryInterface):
     """Main interface class for robot control and monitoring.
 
     This class serves as the primary interface for interacting with a robot system.
@@ -141,33 +96,32 @@ class Robot:
     system-wide operations like status monitoring, trajectory execution, and component
     control.
 
-    The Robot class supports context manager usage and automatic cleanup on program
-    interruption through signal handlers.
-
     Example usage:
         # Using context manager (recommended)
         with Robot() as robot:
             robot.set_joint_pos({"left_arm": [0, 0, 0, 0, 0, 0, 0]})
+            version_info = robot.get_version_info()
 
         # Manual usage with explicit shutdown
         robot = Robot()
         try:
             robot.set_joint_pos({"left_arm": [0, 0, 0, 0, 0, 0, 0]})
+            hand_types = robot.query_hand_type()
         finally:
             robot.shutdown()
 
     Attributes:
-        left_arm: Left arm component interface.
-        right_arm: Right arm component interface.
-        left_hand: Left hand component interface.
-        right_hand: Right hand component interface.
-        head: Head component interface.
-        chassis: Chassis component interface.
-        torso: Torso component interface.
+        left_arm: Left arm component interface (7-DOF manipulator).
+        right_arm: Right arm component interface (7-DOF manipulator).
+        left_hand: Left hand component interface (conditional, based on hardware).
+        right_hand: Right hand component interface (conditional, based on hardware).
+        head: Head component interface (3-DOF pan-tilt-roll).
+        chassis: Chassis component interface (mobile base).
+        torso: Torso component interface (1-DOF pitch).
         battery: Battery monitoring interface.
         estop: Emergency stop interface.
         heartbeat: Heartbeat monitoring interface.
-        sensors: Sensor systems interface.
+        sensors: Sensor systems interface (cameras, IMU, lidar, etc.).
     """
 
     # Type annotations for dynamically created attributes
@@ -214,25 +168,20 @@ class Robot:
             robot_model = get_robot_model()
         self._robot_model: Final[str] = robot_model
 
-        try:
-            self._configs: Final[VegaConfig] = configs or get_vega_config(robot_model)
-        except Exception as e:
-            raise ValueError(f"Failed to load robot configuration: {e}") from e
+        # Load configuration and initialize zenoh session
+        self._configs: Final[VegaConfig] = configs or get_vega_config(robot_model)
+        self._zenoh_session: zenoh.Session = create_zenoh_session(zenoh_config_file)
 
-        try:
-            self._zenoh_session: Final[zenoh.Session] = self._init_zenoh_session(
-                zenoh_config_file
-            )
-        except Exception as e:
-            raise RuntimeError(f"Failed to initialize zenoh session: {e}") from e
+        # Initialize ZenohQueryable parent class
+        super().__init__(self._zenoh_session, self._configs)
 
         self._robot_name: Final[str] = os.getenv(ROBOT_NAME_ENV_VAR, "robot")
-        self._pv_components: Final[list[str]] = [
-            "left_hand",
-            "right_hand",
+        self._pv_components: list[str] = [
             "head",
             "torso",
         ]
+        self._log_subscriber = ServerLogSubscriber(self._zenoh_session)
+        self._hand_types: dict[str, HandType] = {}
 
         # Register for automatic shutdown on signals if enabled
         if auto_shutdown:
@@ -241,53 +190,11 @@ class Robot:
 
         self._print_initialization_info(robot_model)
 
-        # Initialize robot body components dynamically
-        try:
-            config_dict = omegaconf.OmegaConf.to_container(self._configs, resolve=True)
-            if not isinstance(config_dict, dict):
-                raise ValueError("Invalid configuration format")
-            self._init_components(cast(dict[str, Any], config_dict))
-        except Exception as e:
-            self.shutdown()  # Clean up on initialization failure
-            raise RuntimeError(f"Failed to initialize robot components: {e}") from e
+        # Initialize robot components with safe error handling
+        self._safe_initialize_components()
 
-        # Ensure all components are active
-        try:
-            self._wait_for_components()
-        except Exception as e:
-            self.shutdown()  # Clean up on initialization failure
-            raise RuntimeError(f"Failed to activate components: {e}") from e
-
-        try:
-            self.sensors = Sensors(self._configs.sensors, self._zenoh_session)
-            self.sensors.wait_for_all_active()
-        except Exception as e:
-            self.shutdown()  # Clean up on initialization failure
-            raise RuntimeError(f"Failed to initialize sensors: {e}") from e
-
-        # Check soc software version before proceeding
-        version_dict = self.get_software_version(show=False)
-        min_soc_version = dexcontrol.MIN_SOC_SOFTWARE_VERSION
-        soc_version = version_dict.get("soc", {}).get("software_version")
-        if soc_version is None:
-            logger.warning(
-                "Could not determine the software version of the remote driver ('soc'). "
-                "Please ensure the remote server is running and reachable."
-            )
-        elif soc_version < min_soc_version:
-            logger.warning(
-                f"The remote driver ('soc') software version is too old: {soc_version}. "
-                f"Minimum required version is {min_soc_version}.\n"
-                f"Please update the remote server or downgrade this project code to match the server version. "
-                f"Otherwise, some features may not work correctly or may encounter errors."
-            )
-
-        # Set default modes
-        try:
-            self._set_default_modes()
-        except Exception as e:
-            self.shutdown()  # Clean up on initialization failure
-            raise RuntimeError(f"Failed to set default modes: {e}") from e
+        # Check version compatibility using new JSON interface
+        self._check_version_compatibility()
 
     @property
     def robot_model(self) -> str:
@@ -307,24 +214,12 @@ class Robot:
         """
         return self._robot_name
 
-    def __enter__(self) -> Robot:
-        """Context manager entry.
-
-        Returns:
-            Self reference for context management.
-        """
+    def __enter__(self) -> "Robot":
+        """Enter context manager."""
         return self
 
-    def __exit__(
-        self, exc_type: type | None, exc_val: Exception | None, exc_tb: Any
-    ) -> None:
-        """Context manager exit with automatic shutdown.
-
-        Args:
-            exc_type: Type of the exception that occurred, if any.
-            exc_val: Exception instance that occurred, if any.
-            exc_tb: Traceback of the exception that occurred, if any.
-        """
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Exit context manager and clean up resources."""
         self.shutdown()
 
     def __del__(self) -> None:
@@ -339,41 +234,6 @@ class Robot:
             except Exception:  # pylint: disable=broad-except
                 # During interpreter shutdown, some modules might not be available
                 pass
-
-    @staticmethod
-    def cleanup_all() -> None:
-        """Force cleanup of all Zenoh resources and threads.
-
-        This method can be called between Robot instances to ensure a clean state.
-        It's especially useful when creating multiple Robot instances in the same script.
-
-        Example:
-            robot1 = Robot()
-            robot1.shutdown()
-            Robot.cleanup_all()  # Ensure clean state
-
-            robot2 = Robot()  # Safe to create new instance
-            robot2.shutdown()
-        """
-        import gc
-
-        # Force garbage collection to clean up any remaining resources
-        gc.collect()
-
-        # Give threads time to terminate
-        time.sleep(1.0)
-
-        # Log any remaining pyo3-closure threads
-        lingering = []
-        for thread in threading.enumerate():
-            if "pyo3-closure" in thread.name and thread.is_alive():
-                lingering.append(thread.name)
-
-        if lingering:
-            logger.debug(
-                f"Zenoh threads still active after cleanup: {lingering}. "
-                "This is normal and shouldn't affect new Robot instances."
-            )
 
     def _print_initialization_info(self, robot_model: str | None) -> None:
         """Print initialization information.
@@ -393,40 +253,116 @@ class Robot:
 
         console.print(table)
 
-    def _init_components(self, config_dict: dict[str, Any]) -> None:
-        """Initialize robot components from configuration.
+    def _safe_initialize_components(self) -> None:
+        """Safely initialize all robot components with consolidated error handling.
 
-        Args:
-            config_dict: Configuration dictionary for components.
+        This method consolidates the initialization of components, sensors, and
+        default modes into a single method with unified error handling.
 
         Raises:
-            RuntimeError: If component initialization fails.
+            RuntimeError: If any critical initialization step fails.
         """
+        initialization_steps = [
+            ("robot components", self._initialize_robot_components),
+            ("component activation", self._wait_for_components),
+            ("sensors", self._initialize_sensors),
+            ("default state", self._set_default_state),
+        ]
+
+        for step_name, step_function in initialization_steps:
+            try:
+                step_function()
+            except Exception as e:
+                self.shutdown()
+                raise RuntimeError(
+                    f"Robot initialization failed at {step_name}: {e}"
+                ) from e
+
+    def _initialize_sensors(self) -> None:
+        """Initialize sensors and wait for activation."""
+        self.sensors = Sensors(self._configs.sensors, self._zenoh_session)
+        self.sensors.wait_for_all_active()
+
+    def _initialize_robot_components(self) -> None:
+        """Initialize robot components from configuration."""
+        config_dict = omegaconf.OmegaConf.to_container(self._configs, resolve=True)
+        config_dict = cast(dict[str, Any], config_dict)
+
+        initialized_components = []
+        failed_components = []
+
         for component_name, component_config in config_dict.items():
             if component_name == "sensors":
                 continue
 
-            component_config = getattr(self._configs, str(component_name))
-            if (
-                not hasattr(component_config, "_target_")
-                or not component_config._target_
-            ):
-                continue
+            try:
+                # Skip hand initialization if the hand is not present on hardware or unknown
+                if (
+                    component_name in ["left_hand", "right_hand"]
+                    and self._hand_types == {}
+                ):
+                    self._hand_types = self.query_hand_type()
+                if (
+                    component_name in ["left_hand", "right_hand"]
+                    and self._hand_types.get(component_name.split("_")[0])
+                    == HandType.UNKNOWN
+                ):
+                    logger.info(
+                        f"Skipping {component_name} initialization, no known hand detected."
+                    )
+                    continue
 
-            temp_config = omegaconf.OmegaConf.create(
-                {
-                    "_target_": component_config._target_,
-                    "configs": {
-                        k: v for k, v in component_config.items() if k != "_target_"
-                    },
-                }
-            )
-            component_instance = hydra.utils.instantiate(
-                temp_config, zenoh_session=self._zenoh_session
-            )
-            setattr(self, str(component_name), component_instance)
+                component_config = getattr(self._configs, str(component_name))
+                if (
+                    not hasattr(component_config, "_target_")
+                    or not component_config._target_
+                ):
+                    continue
 
-    def _set_default_modes(self) -> None:
+                # Create component configuration
+                temp_config = omegaconf.OmegaConf.create(
+                    {
+                        "_target_": component_config._target_,
+                        "configs": {
+                            k: v for k, v in component_config.items() if k != "_target_"
+                        },
+                    }
+                )
+
+                # Handle different hand types
+                if component_name in ["left_hand", "right_hand"]:
+                    hand_type = self._hand_types.get(component_name.split("_")[0])
+                    temp_config["hand_type"] = hand_type
+
+                # Instantiate component with error handling
+                component_instance = hydra.utils.instantiate(
+                    temp_config, zenoh_session=self._zenoh_session
+                )
+
+                # Store component instance both as attribute and in tracking dictionaries
+                setattr(self, str(component_name), component_instance)
+                initialized_components.append(component_name)
+
+            except Exception as e:
+                logger.error(f"Failed to initialize component {component_name}: {e}")
+                failed_components.append(component_name)
+                # Continue with other components rather than failing completely
+
+        # Report initialization summary
+        if failed_components:
+            logger.warning(
+                f"Failed to initialize components: {', '.join(failed_components)}"
+            )
+
+        # Raise error only if no critical components were initialized
+        critical_components = ["left_arm", "right_arm", "head", "torso", "chassis"]
+        initialized_critical = [
+            c for c in critical_components if c in initialized_components
+        ]
+        if not initialized_critical:
+            raise RuntimeError("Failed to initialize any critical components")
+
+    def _set_default_state(self) -> None:
         """Set default control modes for robot components.
 
         Raises:
@@ -434,7 +370,7 @@ class Robot:
         """
         for arm in ["left_arm", "right_arm"]:
             if component := getattr(self, arm, None):
-                component.set_mode("position")
+                component.set_modes(["position"] * 7)
 
         if head := getattr(self, "head", None):
             head.set_mode("enable")
@@ -455,14 +391,19 @@ class Robot:
         component_names: Final[list[str]] = [
             "left_arm",
             "right_arm",
-            "left_hand",
-            "right_hand",
             "head",
             "chassis",
             "torso",
             "battery",
             "estop",
         ]
+
+        # Only add hands to component_names if they were actually initialized
+        if hasattr(self, "left_hand"):
+            component_names.append("left_hand")
+        if hasattr(self, "right_hand"):
+            component_names.append("right_hand")
+
         if self._configs.heartbeat.enabled:
             component_names.append("heartbeat")
 
@@ -520,43 +461,97 @@ class Robot:
                 f"Other components may work, but some features, e.g. collision avoidance, may not work correctly."
                 f"Please check the robot status immediately."
             )
+        else:
+            logger.info("All motor components are active")
 
-        logger.info("All components activated successfully")
+    def get_component_map(self) -> dict[str, Any]:
+        """Get the component mapping dictionary.
 
-    def _init_zenoh_session(self, zenoh_config_file: str | None) -> zenoh.Session:
-        """Initializes Zenoh communication session.
+        Returns:
+            Dictionary mapping component names to component instances.
+        """
+        component_map = {
+            "left_arm": getattr(self, "left_arm", None),
+            "right_arm": getattr(self, "right_arm", None),
+            "torso": getattr(self, "torso", None),
+            "head": getattr(self, "head", None),
+        }
+
+        # Only add hands if they were initialized
+        if hasattr(self, "left_hand"):
+            component_map["left_hand"] = self.left_hand
+        if hasattr(self, "right_hand"):
+            component_map["right_hand"] = self.right_hand
+
+        # Remove None values
+        return {k: v for k, v in component_map.items() if v is not None}
+
+    def validate_component_names(self, joint_pos: dict[str, Any]) -> None:
+        """Validate that all component names are valid and initialized.
 
         Args:
-            zenoh_config_file: Path to zenoh configuration file.
-
-        Returns:
-            Initialized zenoh session.
+            joint_pos: Joint position dictionary to validate.
 
         Raises:
-            RuntimeError: If zenoh session initialization fails.
+            ValueError: If invalid component names are found with detailed guidance.
+        """
+        if not joint_pos:
+            raise ValueError("Joint position dictionary cannot be empty")
+
+        component_map = self.get_component_map()
+        valid_components = set(component_map.keys())
+        provided_components = set(joint_pos.keys())
+        invalid_components = provided_components - valid_components
+
+        if invalid_components:
+            available_msg = (
+                f"Available components: {', '.join(sorted(valid_components))}"
+            )
+            invalid_msg = (
+                f"Invalid component names: {', '.join(sorted(invalid_components))}"
+            )
+
+            # Provide helpful suggestions for common mistakes
+            suggestions = []
+            for invalid in invalid_components:
+                if invalid in ["left_hand", "right_hand"]:
+                    suggestions.append(f"'{invalid}' may not be connected or detected")
+                elif invalid.replace("_", "") in [
+                    c.replace("_", "") for c in valid_components
+                ]:
+                    close_match = next(
+                        (
+                            c
+                            for c in valid_components
+                            if c.replace("_", "") == invalid.replace("_", "")
+                        ),
+                        None,
+                    )
+                    if close_match:
+                        suggestions.append(
+                            f"Did you mean '{close_match}' instead of '{invalid}'?"
+                        )
+
+            error_msg = f"{invalid_msg}. {available_msg}."
+            if suggestions:
+                error_msg += f" Suggestions: {' '.join(suggestions)}"
+
+            raise ValueError(error_msg)
+
+    def _check_version_compatibility(self) -> None:
+        """Check version compatibility between client and server.
+
+        This method uses the new JSON-based version interface to:
+        1. Compare client library version with server's minimum required version
+        2. Check server component versions for compatibility
+        3. Provide clear guidance for version mismatches
         """
         try:
-            config_path = zenoh_config_file or self._get_default_zenoh_config()
-            if config_path is None:
-                logger.warning("Using default zenoh config settings")
-                return zenoh.open(zenoh.Config())
-            return zenoh.open(zenoh.Config.from_file(config_path))
+            version_info = self.get_version_info(show=False)
+            check_version_compatibility(version_info)
         except Exception as e:
-            raise RuntimeError(f"Failed to initialize zenoh session: {e}") from e
-
-    @staticmethod
-    def _get_default_zenoh_config() -> str | None:
-        """Gets the default zenoh configuration file path.
-
-        Returns:
-            Path to default config file if it exists, None otherwise.
-        """
-        default_path = dexcontrol.COMM_CFG_PATH
-        if not default_path.exists():
-            logger.warning(f"Zenoh config file not found at {default_path}")
-            logger.warning("Please use dextop to set up the zenoh config file")
-            return None
-        return str(default_path)
+            # Log error but don't fail initialization for version check issues
+            logger.warning(f"Version compatibility check failed: {e}")
 
     def shutdown(self) -> None:
         """Cleans up and closes all component connections.
@@ -569,7 +564,7 @@ class Robot:
             logger.warning("Shutdown already called, skipping")
             return
 
-        logger.info("Shutting down robot...")
+        logger.info("Shutting down robot components...")
         self._shutdown_called = True
 
         # Remove from active robots registry
@@ -590,9 +585,6 @@ class Robot:
                     logger.error(
                         f"Error stopping component {component.__class__.__name__}: {e}"
                     )
-
-        # Brief delay to ensure all stop operations complete
-        time.sleep(0.1)
 
         # Shutdown sensors first (they may have background threads)
         try:
@@ -616,79 +608,28 @@ class Robot:
         # Brief delay to allow component shutdown to complete
         time.sleep(0.1)
 
-        # Enhanced Zenoh session close with better synchronization
-        zenoh_close_success = False
-        zenoh_close_exception = None
+        # Clean up log subscriber before closing zenoh session
+        try:
+            self._log_subscriber.shutdown()
+        except Exception as e:  # pylint: disable=broad-except
+            logger.debug(f"Error shutting down log subscriber: {e}")
 
-        def _close_zenoh_session():
-            """Close zenoh session in a separate thread."""
-            nonlocal zenoh_close_success, zenoh_close_exception
-            try:
-                # Brief delay for Zenoh cleanup
-                time.sleep(0.1)
-                self._zenoh_session.close()
-                zenoh_close_success = True
-            except Exception as e:  # pylint: disable=broad-except
-                zenoh_close_exception = e
-                logger.warning(f"Zenoh session close error: {e}")
-
-        # Try to close zenoh session with timeout
-        close_thread = threading.Thread(target=_close_zenoh_session, daemon=True)
-        close_thread.start()
-
-        # Wait for close with reasonable timeout
-        close_timeout = 2.0
-        close_thread.join(timeout=close_timeout)
-
-        if close_thread.is_alive():
-            logger.warning(f"Zenoh session close timed out after {close_timeout}s")
-            # The thread is daemon, so it won't block the main thread
-        elif zenoh_close_success:
-            logger.debug("Zenoh session closed cleanly")
-        elif zenoh_close_exception:
-            logger.debug(
-                f"Zenoh session close completed with error: {zenoh_close_exception}"
-            )
-
-        # Give Zenoh threads more time to clean up properly
-        # This helps ensure threads terminate naturally
-        time.sleep(0.8)
-
-        # Check for lingering pyo3-closure threads
-        # These are internal Zenoh library threads
-        lingering_threads = []
-        for thread in threading.enumerate():
-            if (
-                "pyo3-closure" in thread.name
-                and thread.is_alive()
-                and not thread.daemon
-            ):
-                lingering_threads.append(thread.name)
-
+        # Close Zenoh session
+        close_zenoh_session_with_timeout(self._zenoh_session)
+        lingering_threads = wait_for_zenoh_cleanup()
         if lingering_threads:
-            logger.debug(
-                f"Note: Zenoh library threads still active: {lingering_threads}. "
-                "These are internal library threads that should not prevent creating new Robot instances."
-            )
-
-            # If this is the last robot being shutdown and we're in the main module,
-            # help the script exit cleanly
-            import sys
-
-            if (
-                not _active_robots
-                and threading.current_thread() is threading.main_thread()
-            ):
-                # Check if we're likely at the end of the main script
-                frame = sys._getframe()
-                while frame.f_back:
-                    frame = frame.f_back
-                # If we're at the top level of a script (not in interactive mode)
-                if frame.f_code.co_name == "<module>" and not hasattr(sys, "ps1"):
-                    logger.debug("Main script ending, forcing clean exit")
-                    os._exit(0)
-
+            self._assist_clean_exit_if_needed()
         logger.info("Robot shutdown complete")
+
+    def _assist_clean_exit_if_needed(self) -> None:
+        """Assist with clean exit if this is the last robot and we're exiting."""
+        if (
+            not _active_robots  # No more active robots
+            and threading.current_thread() is threading.main_thread()  # In main thread
+            and not hasattr(sys, "ps1")  # Not in interactive mode
+        ):
+            logger.debug("Assisting clean exit due to lingering Zenoh threads")
+            sys.exit(0)
 
     def is_shutdown(self) -> bool:
         """Check if the robot has been shutdown.
@@ -697,209 +638,6 @@ class Robot:
             True if the robot has been shutdown, False otherwise.
         """
         return self._shutdown_called
-
-    def query_ntp(
-        self,
-        sample_count: int = 30,
-        show: bool = False,
-        timeout: float = 1.0,
-        device: Literal["soc", "jetson"] = "soc",
-    ) -> dict[Literal["success", "offset", "rtt"], bool | float]:
-        """Query the NTP server via zenoh for time synchronization and compute robust statistics.
-
-        Args:
-            sample_count: Number of NTP samples to request (default: 50).
-            show: Whether to print summary statistics using a rich table.
-            timeout: Timeout for the zenoh querier in seconds (default: 2.0).
-            device: Which device to query for NTP ("soc" or "jetson").
-
-        Returns:
-            Dictionary with keys:
-                - "success": True if any replies were received, False otherwise.
-                - "offset": Mean offset (in seconds) after removing RTT outliers.
-                - "rtt": Mean round-trip time (in seconds) after removing RTT outliers.
-        """
-        if device == "soc":
-            ntp_key = resolve_key_name(self._configs.soc_ntp_query_name)
-        elif device == "jetson":
-            raise NotImplementedError("Jetson NTP query is not implemented yet")
-        time_offset = []
-        time_rtt = []
-
-        querier = self._zenoh_session.declare_querier(ntp_key, timeout=timeout)
-        time.sleep(0.1)
-
-        reply_count = 0
-        for i in range(sample_count):
-            request = dexcontrol_query_pb2.NTPRequest()
-            request.client_send_time_ns = time.time_ns()
-            request.sample_count = sample_count
-            request.sample_index = i
-            replies = querier.get(payload=request.SerializeToString())
-
-            for reply in replies:
-                reply_count += 1
-                if reply.ok and reply.ok.payload:
-                    client_receive_time_ns = time.time_ns()
-                    response = dexcontrol_query_pb2.NTPResponse()
-                    response.ParseFromString(reply.ok.payload.to_bytes())
-                    t0 = request.client_send_time_ns
-                    t1 = response.server_receive_time_ns
-                    t2 = response.server_send_time_ns
-                    t3 = client_receive_time_ns
-                    offset = ((t1 - t0) + (t2 - t3)) // 2 / 1e9
-                    rtt = (t3 - t0) / 1e9
-                    time_offset.append(offset)
-                    time_rtt.append(rtt)
-            if i < sample_count - 1:
-                time.sleep(0.01)
-
-        querier.undeclare()
-        if reply_count == 0:
-            return {"success": False, "offset": 0, "rtt": 0}
-
-        stats = compute_ntp_stats(time_offset, time_rtt)
-        offset = stats["offset (mean)"]
-        rtt = stats["round_trip_time (mean)"]
-        if show:
-            show_ntp_stats(stats)
-
-        return {"success": True, "offset": offset, "rtt": rtt}
-
-    def get_software_version(
-        self, show: bool = True
-    ) -> dict[str, TYPE_SOFTWARE_VERSION]:
-        """Retrieve software version information for all components.
-
-        Args:
-            show: Whether to display the version information.
-
-        Returns:
-            Dictionary containing version information for all components.
-
-        Raises:
-            RuntimeError: If version information cannot be retrieved.
-        """
-        try:
-            replies = self._zenoh_session.get(
-                resolve_key_name(self._configs.version_info_name)
-            )
-            version_dict = {}
-            for reply in replies:
-                if reply.ok and reply.ok.payload:
-                    version_bytes = reply.ok.payload.to_bytes()
-                    version_msg = cast(
-                        dexcontrol_query_pb2.SoftwareVersion,
-                        dexcontrol_query_pb2.SoftwareVersion.FromString(version_bytes),
-                    )
-                    version_dict = software_version_to_dict(version_msg)
-                    break
-
-            if show:
-                show_software_version(version_dict)
-            return version_dict
-        except Exception as e:
-            raise RuntimeError(f"Failed to retrieve software versions: {e}") from e
-
-    def get_component_status(
-        self, show: bool = True
-    ) -> dict[str, dict[str, bool | ComponentStatus]]:
-        """Retrieve status information for all components.
-
-        Args:
-            show: Whether to display the status information.
-
-        Returns:
-            Dictionary containing status information for all components.
-
-        Raises:
-            RuntimeError: If status information cannot be retrieved.
-        """
-        try:
-            replies = self._zenoh_session.get(
-                resolve_key_name(self._configs.status_info_name)
-            )
-            status_dict = {}
-            for reply in replies:
-                if reply.ok and reply.ok.payload:
-                    status_bytes = reply.ok.payload.to_bytes()
-                    status_msg = cast(
-                        dexcontrol_query_pb2.ComponentStates,
-                        dexcontrol_query_pb2.ComponentStates.FromString(status_bytes),
-                    )
-                    status_dict = status_to_dict(status_msg)
-                    break
-
-            if show:
-                show_component_status(status_dict)
-            return status_dict
-        except Exception as e:
-            raise RuntimeError(f"Failed to retrieve component status: {e}") from e
-
-    def reboot_component(self, part: Literal["arm", "chassis", "torso"]) -> None:
-        """Reboot a specific robot component.
-
-        Args:
-            part: Component to reboot ("arm", "chassis", or "torso").
-
-        Raises:
-            ValueError: If the specified component is invalid.
-            RuntimeError: If the reboot operation fails.
-        """
-        component_map = {
-            "arm": dexcontrol_query_pb2.RebootComponent.Component.ARM,
-            "chassis": dexcontrol_query_pb2.RebootComponent.Component.CHASSIS,
-            "torso": dexcontrol_query_pb2.RebootComponent.Component.TORSO,
-        }
-
-        if part not in component_map:
-            raise ValueError(f"Invalid component: {part}")
-
-        try:
-            query_msg = dexcontrol_query_pb2.RebootComponent(
-                component=component_map[part]
-            )
-            self._zenoh_session.get(
-                resolve_key_name(self._configs.reboot_query_name),
-                payload=query_msg.SerializeToString(),
-            )
-            logger.info(f"Rebooting component: {part}")
-        except Exception as e:
-            raise RuntimeError(f"Failed to reboot component {part}: {e}") from e
-
-    def clear_error(
-        self, part: Literal["left_arm", "right_arm", "chassis", "head"] | str
-    ) -> None:
-        """Clear error state for a specific component.
-
-        Args:
-            part: Component to clear error state for.
-
-        Raises:
-            ValueError: If the specified component is invalid.
-            RuntimeError: If the error clearing operation fails.
-        """
-        component_map = {
-            "left_arm": dexcontrol_query_pb2.ClearError.Component.LEFT_ARM,
-            "right_arm": dexcontrol_query_pb2.ClearError.Component.RIGHT_ARM,
-            "chassis": dexcontrol_query_pb2.ClearError.Component.CHASSIS,
-            "head": dexcontrol_query_pb2.ClearError.Component.HEAD,
-        }
-
-        if part not in component_map:
-            raise ValueError(f"Invalid component: {part}")
-
-        try:
-            query_msg = dexcontrol_query_pb2.ClearError(component=component_map[part])
-            self._zenoh_session.get(
-                resolve_key_name(self._configs.clear_error_query_name),
-                handler=lambda reply: logger.info(f"Cleared error of {part}"),
-                payload=query_msg.SerializeToString(),
-            )
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to clear error for component {part}: {e}"
-            ) from e
 
     def get_joint_pos_dict(
         self,
@@ -924,14 +662,7 @@ class Robot:
             KeyError: If an invalid component name is provided.
             RuntimeError: If joint position retrieval fails.
         """
-        component_map = {
-            "left_arm": self.left_arm,
-            "right_arm": self.right_arm,
-            "torso": self.torso,
-            "head": self.head,
-            "left_hand": self.left_hand,
-            "right_hand": self.right_hand,
-        }
+        component_map = self.get_component_map()
 
         try:
             if isinstance(component, str):
@@ -1021,10 +752,10 @@ class Robot:
 
         try:
             start_time = time.time()
-            component_map = self._get_component_map()
+            component_map = self.get_component_map()
 
             # Validate component names
-            self._validate_component_names(joint_pos, component_map)
+            self.validate_component_names(joint_pos)
 
             # Separate position-velocity controlled components from others
             pv_components = [c for c in joint_pos if c in self._pv_components]
@@ -1150,6 +881,10 @@ class Robot:
 
         return adjusted_positions
 
+    def have_hand(self, side: Literal["left", "right"]) -> bool:
+        """Check if the robot has a hand."""
+        return self._hand_types.get(side) != HandType.UNKNOWN
+
     def _process_trajectory(
         self, trajectory: dict[str, np.ndarray | dict[str, np.ndarray]]
     ) -> dict[str, dict[str, np.ndarray]]:
@@ -1215,14 +950,7 @@ class Robot:
             ValueError: If invalid component is specified.
         """
         rate_limiter = RateLimiter(control_hz)
-        component_map = {
-            "left_arm": self.left_arm,
-            "right_arm": self.right_arm,
-            "torso": self.torso,
-            "head": self.head,
-            "left_hand": self.left_hand,
-            "right_hand": self.right_hand,
-        }
+        component_map = self.get_component_map()
 
         first_component = next(iter(processed_trajectory))
         trajectory_length = len(processed_trajectory[first_component]["position"])
@@ -1243,41 +971,6 @@ class Robot:
                         position, relative=relative, wait_time=0.0
                     )
             rate_limiter.sleep()
-
-    def _get_component_map(self) -> dict[str, Any]:
-        """Get the component mapping dictionary.
-
-        Returns:
-            Dictionary mapping component names to component instances.
-        """
-        return {
-            "left_arm": self.left_arm,
-            "right_arm": self.right_arm,
-            "torso": self.torso,
-            "head": self.head,
-            "left_hand": self.left_hand,
-            "right_hand": self.right_hand,
-        }
-
-    def _validate_component_names(
-        self,
-        joint_pos: dict[str, list[float] | np.ndarray],
-        component_map: dict[str, Any],
-    ) -> None:
-        """Validate that all component names are valid.
-
-        Args:
-            joint_pos: Joint position dictionary.
-            component_map: Component mapping dictionary.
-
-        Raises:
-            ValueError: If invalid component names are found.
-        """
-        invalid_components = set(joint_pos.keys()) - set(component_map.keys())
-        if invalid_components:
-            raise ValueError(
-                f"Invalid component names: {', '.join(invalid_components)}"
-            )
 
     def _set_pv_components(
         self,

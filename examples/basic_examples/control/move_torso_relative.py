@@ -65,8 +65,10 @@ def main(
         )
 
     # Close hands and set initial torso position
-    bot.left_hand.close_hand()
-    bot.right_hand.close_hand()
+    if bot.have_hand("left"):
+        bot.left_hand.close_hand()
+    if bot.have_hand("right"):
+        bot.right_hand.close_hand()
     bot.torso.go_to_pose("crouch45_medium", wait_time=5.0)
 
     # Execute relative joint movement

@@ -78,11 +78,9 @@ def control_joints(
     # Get the component object
     if component == "left_arm":
         comp_obj = robot.left_arm
-        comp_obj.set_mode("position")
         max_joint_idx = 6  # 7 joints (0-6)
     elif component == "right_arm":
         comp_obj = robot.right_arm
-        comp_obj.set_mode("position")
         max_joint_idx = 6  # 7 joints (0-6)
     elif component == "torso":
         comp_obj = robot.torso

@@ -8,10 +8,12 @@
 # 2. Commercial License
 #    For commercial licensing terms, contact: contact@dexmate.ai
 
-"""Example script to display robot system information.
+"""Example script to reboot robot components.
 
-This script demonstrates how to query and display various robot status information
-including software version, component status, and battery level.
+This script demonstrates how to use the standalone RobotQueryInterface
+to reboot specific robot components without initializing the full Robot class.
+This is more lightweight and efficient when you only need to perform
+simple query operations.
 """
 
 from typing import Literal
@@ -19,22 +21,24 @@ from typing import Literal
 import tyro
 from loguru import logger
 
-from dexcontrol.robot import Robot
+from dexcontrol.core.robot_query_interface import RobotQueryInterface
 
 
 def main(part: Literal["arm", "chassis", "torso"]) -> None:
-    """Reboot part of the robot.
+    """Reboot part of the robot using standalone query interface.
 
     Args:
         part: Part of the robot to reboot.
     """
-    # Initialize robot with default configuration
-    bot = Robot()
-    logger.info(f"Rebooting {part}...")
-    bot.reboot_component(part)
+    query_interface = RobotQueryInterface.create()
 
-    # Display robot system information
-    bot.shutdown()
+    try:
+        logger.info(f"Rebooting {part}...")
+        query_interface.reboot_component(part)
+        logger.info(f"Reboot command sent for {part}")
+    finally:
+        # Clean up the zenoh session
+        query_interface.close()
 
 
 if __name__ == "__main__":

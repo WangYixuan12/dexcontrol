@@ -16,6 +16,7 @@ class HandConfig:
     _target_: str = "dexcontrol.core.hand.HandF5D6"
     state_sub_topic: str = "state/hand/right"
     control_pub_topic: str = "control/hand/right"
+    touch_sensor_sub_topic: str = "state/hand/right/touch"  # Only for V2 hand
     dof: int = 6
     joint_name: list[str] = field(
         default_factory=lambda: [

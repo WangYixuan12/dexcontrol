@@ -129,14 +129,9 @@ class ChassisVelocityTeleopNode(DualSenseTeleopBase):
         # Update head position using left analog stick
         self._update_head_position()
 
-        # DEBUG: get_joint_pos and print
-        # [:, 0]: Current steering positions in radians
-        # [:, 1]: Current wheel positions in radians
-        # [:, 2]: Current wheel velocities in m/s
-        chassis_joint_state = self.bot.chassis.get_joint_state()
-        print(f"Steering pos in radians: {chassis_joint_state[:, 0]} ")
-        print(f"Wheel pos in radians: {chassis_joint_state[:, 1]} ")
-        print(f"Wheel vel in m/s: {chassis_joint_state[:, 2]} ")
+        print(f"Steering pos in radians: {self.bot.chassis.steering_angle} ")
+        print(f"Wheel encoder pos in m: {self.bot.chassis.wheel_encoder_pos} ")
+        print(f"Wheel vel in m/s: {self.bot.chassis.wheel_velocity} ")
 
     def _toggle_head_control(self) -> None:
         """Toggles the head control mode."""

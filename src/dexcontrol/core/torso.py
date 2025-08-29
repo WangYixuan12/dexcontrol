@@ -49,7 +49,7 @@ class Torso(RobotJointComponent):
         super().__init__(
             state_sub_topic=configs.state_sub_topic,
             control_pub_topic=configs.control_pub_topic,
-            state_message_type=dexcontrol_msg_pb2.TorsoState,
+            state_message_type=dexcontrol_msg_pb2.MotorStateWithCurrent,
             zenoh_session=zenoh_session,
             joint_name=configs.joint_name,
             joint_limit=configs.joint_limit
@@ -119,9 +119,9 @@ class Torso(RobotJointComponent):
             )
 
         # Create and send control message
-        control_msg = dexcontrol_msg_pb2.TorsoCommand()
-        control_msg.joint_pos.extend(joint_pos.tolist())
-        control_msg.joint_vel.extend(joint_vel.tolist())
+        control_msg = dexcontrol_msg_pb2.MotorPosVelCommand()
+        control_msg.pos.extend(joint_pos.tolist())
+        control_msg.vel.extend(joint_vel.tolist())
         self._publish_control(control_msg)
 
         # Wait if specified

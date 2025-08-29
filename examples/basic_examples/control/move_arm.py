@@ -53,7 +53,6 @@ def main(
         raise ValueError('arm_side must be "right" or "left"')
 
     arm = bot.left_arm if arm_side == "left" else bot.right_arm
-    arm.set_mode("position")
     logger.info(f"Initializing movement sequence for {arm_side} arm")
 
     try:

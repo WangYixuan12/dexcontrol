@@ -311,9 +311,9 @@ class RobotJointComponent(RobotComponent):
             ValueError: If joint positions are not available for this component.
         """
         state = self._get_state()
-        if not hasattr(state, "joint_pos"):
+        if not hasattr(state, "pos"):
             raise ValueError("Joint positions are not available for this component.")
-        joint_pos = np.array(state.joint_pos, dtype=np.float32)
+        joint_pos = np.array(state.pos, dtype=np.float32)
         return self._extract_joint_info(joint_pos, joint_id=joint_id)
 
     def get_joint_pos_dict(
@@ -349,9 +349,9 @@ class RobotJointComponent(RobotComponent):
             ValueError: If joint velocities are not available for this component.
         """
         state = self._get_state()
-        if not hasattr(state, "joint_vel"):
+        if not hasattr(state, "vel"):
             raise ValueError("Joint velocities are not available for this component.")
-        joint_vel = np.array(state.joint_vel, dtype=np.float32)
+        joint_vel = np.array(state.vel, dtype=np.float32)
         return self._extract_joint_info(joint_vel, joint_id=joint_id)
 
     def get_joint_vel_dict(
@@ -386,10 +386,30 @@ class RobotJointComponent(RobotComponent):
             ValueError: If joint currents are not available for this component.
         """
         state = self._get_state()
-        if not hasattr(state, "joint_cur"):
+        if not hasattr(state, "cur"):
             raise ValueError("Joint currents are not available for this component.")
-        joint_cur = np.array(state.joint_cur, dtype=np.float32)
+        joint_cur = np.array(state.cur, dtype=np.float32)
         return self._extract_joint_info(joint_cur, joint_id=joint_id)
+
+    def get_joint_torque(
+        self, joint_id: list[int] | int | None = None
+    ) -> Float[np.ndarray, " N"]:
+        """Gets the torque of all joints in the component.
+
+        Args:
+            joint_id: Optional ID(s) of specific joints to query.
+
+        Returns:
+            Array of joint torques in component-specific units (Nm).
+
+        Raises:
+            ValueError: If joint torques are not available for this component.
+        """
+        state = self._get_state()
+        if not hasattr(state, "torque"):
+            raise ValueError("Joint torques are not available for this component.")
+        joint_torque = np.array(state.torque, dtype=np.float32)
+        return self._extract_joint_info(joint_torque, joint_id=joint_id)
 
     def get_joint_current_dict(
         self, joint_id: list[int] | int | None = None
@@ -421,9 +441,9 @@ class RobotJointComponent(RobotComponent):
             ValueError: If joint error codes are not available for this component.
         """
         state = self._get_state()
-        if not hasattr(state, "joint_err"):
+        if not hasattr(state, "error"):
             raise ValueError("Joint error codes are not available for this component.")
-        joint_err = np.array(state.joint_err, dtype=np.uint32)
+        joint_err = np.array(state.error, dtype=np.uint32)
         return self._extract_joint_info(joint_err, joint_id=joint_id)
 
     def get_joint_err_dict(
@@ -457,22 +477,27 @@ class RobotJointComponent(RobotComponent):
             ValueError: If joint positions or velocities are not available.
         """
         state = self._get_state()
-        if not hasattr(state, "joint_pos") or not hasattr(state, "joint_vel"):
+        if not hasattr(state, "pos") or not hasattr(state, "vel"):
             raise ValueError(
                 "Joint positions or velocities are not available for this component."
             )
 
         # Create initial state array with positions and velocities
-        joint_pos = np.array(state.joint_pos, dtype=np.float32)
-        joint_vel = np.array(state.joint_vel, dtype=np.float32)
+        joint_pos = np.array(state.pos, dtype=np.float32)
+        joint_vel = np.array(state.vel, dtype=np.float32)
 
-        if hasattr(state, "joint_cur"):
+        if hasattr(state, "cur"):
             # If currents are available, include them
-            joint_cur = np.array(state.joint_cur, dtype=np.float32)
+            joint_cur = np.array(state.cur, dtype=np.float32)
             joint_state = np.stack([joint_pos, joint_vel, joint_cur], axis=1)
+        elif hasattr(state, "torque"):
+            # If torques are available, include them
+            joint_torque = np.array(state.torque, dtype=np.float32)
+            joint_state = np.stack([joint_pos, joint_vel, joint_torque], axis=1)
         else:
-            # Otherwise just include positions and velocities
-            joint_state = np.stack([joint_pos, joint_vel], axis=1)
+            raise ValueError(
+                f"Either current or torque should be available for this {self.__class__.__name__}."
+            )
 
         return self._extract_joint_info(joint_state, joint_id=joint_id)
 
@@ -543,8 +568,9 @@ class RobotJointComponent(RobotComponent):
         joint_cmd = self._convert_joint_cmd_to_array(joint_cmd)
         return self.get_joint_pos() + joint_cmd
 
+    @staticmethod
     def _extract_joint_info(
-        self, joint_info: np.ndarray, joint_id: list[int] | int | None = None
+        joint_info: np.ndarray, joint_id: list[int] | int | None = None
     ) -> np.ndarray:
         """Extract the joint information of the component as a numpy array.
 

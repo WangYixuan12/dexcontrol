@@ -26,7 +26,6 @@ from dexmotion.utils import robot_utils
 from loguru import logger
 
 from dexcontrol.core.arm import Arm
-from dexcontrol.core.hand import Hand
 from dexcontrol.robot import Robot
 from dexcontrol.utils.rate_limiter import RateLimiter
 
@@ -55,9 +54,7 @@ class ArmSafeInitializer:
         self.torso_pitch_angle = self.bot.torso.pitch_angle
 
         # Initialize arms and hands
-        self.left_arm, self.right_arm, self.left_hand, self.right_hand = (
-            self._initialize_arms_and_hands(self.bot)
-        )
+        self.left_arm, self.right_arm = self._initialize_arms(self.bot)
 
         # Get initial joint configuration
         initial_joint_configuration = self.bot.get_joint_pos_dict(
@@ -86,7 +83,7 @@ class ArmSafeInitializer:
             visualize=self.visualize,  # Use the same visualization setting
         )
 
-    def _initialize_arms_and_hands(self, bot: Robot) -> tuple[Arm, Arm, Hand, Hand]:
+    def _initialize_arms(self, bot: Robot) -> tuple[Arm, Arm]:
         """Initialize and configure robot arms and hands.
 
         Args:
@@ -98,10 +95,7 @@ class ArmSafeInitializer:
         left_arm = bot.left_arm
         right_arm = bot.right_arm
 
-        left_hand = bot.left_hand
-        right_hand = bot.right_hand
-
-        return left_arm, right_arm, left_hand, right_hand
+        return left_arm, right_arm
 
     def _move_trajectory(
         self,

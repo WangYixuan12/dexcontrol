@@ -11,13 +11,14 @@
 """Miscellaneous robot components module.
 
 This module provides classes for various auxiliary robot components such as Battery,
-EStop (emergency stop), and UltraSonicSensor.
+EStop (emergency stop), ServerLogSubscriber, and UltraSonicSensor.
 """
 
+import json
 import os
 import threading
 import time
-from typing import TypeVar
+from typing import Any, TypeVar, cast
 
 import zenoh
 from google.protobuf.message import Message
@@ -133,7 +134,7 @@ class Battery(RobotComponent):
         power = state.current * state.voltage
         power_style = self._get_power_style(power)
         table.add_row(
-            "Power",
+            "Power Consumption",
             f"[{power_style}]{power:.2f}W[/] ([blue]{state.current:.2f}A[/] "
             f"× [blue]{state.voltage:.2f}V[/])",
         )
@@ -281,25 +282,40 @@ class EStop(RobotComponent):
                 - software_estop_enabled: Software EStop enabled
         """
         state = self._get_state()
+        state = cast(dexcontrol_msg_pb2.EStopState, state)
         if state is None:
             return {
                 "button_pressed": False,
                 "software_estop_enabled": False,
             }
+        button_pressed = (
+            state.left_button_pressed
+            or state.right_button_pressed
+            or state.waist_button_pressed
+            or state.wireless_button_pressed
+        )
         return {
-            "button_pressed": state.button_pressed,
+            "button_pressed": button_pressed,
             "software_estop_enabled": state.software_estop_enabled,
         }
 
     def is_button_pressed(self) -> bool:
         """Checks if the EStop button is pressed."""
         state = self._get_state()
-        return state.button_pressed if state is not None else False
+        state = cast(dexcontrol_msg_pb2.EStopState, state)
+        button_pressed = (
+            state.left_button_pressed
+            or state.right_button_pressed
+            or state.waist_button_pressed
+            or state.wireless_button_pressed
+        )
+        return button_pressed
 
     def is_software_estop_enabled(self) -> bool:
         """Checks if the software EStop is enabled."""
         state = self._get_state()
-        return state.software_estop_enabled if state is not None else False
+        state = cast(dexcontrol_msg_pb2.EStopState, state)
+        return state.software_estop_enabled
 
     def activate(self) -> None:
         """Activates the software emergency stop (E-Stop)."""
@@ -325,27 +341,19 @@ class EStop(RobotComponent):
 
     def show(self) -> None:
         """Displays the current EStop status as a formatted table with color indicators."""
-        state = self._get_state()
-
         table = Table(title="E-Stop Status")
         table.add_column("Parameter", style="cyan")
         table.add_column("Value")
 
-        if state is None:
-            table.add_row("Status", "[red]No E-Stop data available[/]")
-            console = Console()
-            console.print(table)
-            return
+        button_pressed = self.is_button_pressed()
+        button_style = "bold red" if button_pressed else "bold dark_green"
+        table.add_row("Button Pressed", f"[{button_style}]{button_pressed}[/]")
 
-        button_style = "bold red" if state.button_pressed else "bold dark_green"
-        table.add_row("Button Pressed", f"[{button_style}]{state.button_pressed}[/]")
-
-        software_style = (
-            "bold red" if state.software_estop_enabled else "bold dark_green"
-        )
+        if_software_estop_enabled = self.is_software_estop_enabled()
+        software_style = "bold red" if if_software_estop_enabled else "bold dark_green"
         table.add_row(
             "Software E-Stop Enabled",
-            f"[{software_style}]{state.software_estop_enabled}[/]",
+            f"[{software_style}]{if_software_estop_enabled}[/]",
         )
 
         console = Console()
@@ -651,9 +659,9 @@ class Heartbeat:
         last_value = status["last_value"]
         if last_value is not None:
             uptime_str = self._format_uptime(last_value)
-            table.add_row("Robot server uptime", f"[blue]{uptime_str}[/]")
+            table.add_row("Robot Driver Uptime", f"[blue]{uptime_str}[/]")
         else:
-            table.add_row("Robot server uptime", "[red]No data[/]")
+            table.add_row("Robot Driver Uptime", "[red]No data[/]")
 
         # Time since last heartbeat
         time_since = status["time_since_last"]
@@ -671,3 +679,145 @@ class Heartbeat:
 
         console = Console()
         console.print(table)
+
+
+class ServerLogSubscriber:
+    """Server log subscriber that monitors and displays server log messages.
+
+    This class subscribes to the "logs" topic and handles incoming log messages
+    from the robot server. It provides formatted display of server logs with
+    proper error handling and validation.
+
+    The server sends log information via the "logs" topic as JSON with format:
+    {"timestamp": "ISO8601", "message": "text", "source": "robot_server"}
+
+    Attributes:
+        _zenoh_session: Zenoh session for communication.
+        _log_subscriber: Zenoh subscriber for log messages.
+    """
+
+    def __init__(self, zenoh_session: zenoh.Session) -> None:
+        """Initialize the ServerLogSubscriber.
+
+        Args:
+            zenoh_session: Active Zenoh session for communication.
+        """
+        self._zenoh_session = zenoh_session
+        self._log_subscriber = None
+        self._initialize()
+
+    def _initialize(self) -> None:
+        """Initialize the log subscriber with error handling."""
+
+        def log_handler(sample):
+            """Handle incoming log messages from the server."""
+            if not self._is_valid_log_sample(sample):
+                return
+
+            try:
+                log_data = self._parse_log_payload(sample.payload)
+                if log_data:
+                    self._display_server_log(log_data)
+            except Exception as e:
+                logger.warning(f"Failed to process server log: {e}")
+
+        try:
+            # Subscribe to server logs topic
+            self._log_subscriber = self._zenoh_session.declare_subscriber(
+                "logs", log_handler
+            )
+            logger.debug("Server log subscriber initialized")
+        except Exception as e:
+            logger.warning(f"Failed to initialize server log subscriber: {e}")
+            self._log_subscriber = None
+
+    def _is_valid_log_sample(self, sample) -> bool:
+        """Check if log sample is valid.
+
+        Args:
+            sample: Zenoh sample to validate.
+
+        Returns:
+            True if sample is valid, False otherwise.
+        """
+        if sample is None or sample.payload is None:
+            logger.debug("Received empty log sample")
+            return False
+        return True
+
+    def _parse_log_payload(self, payload) -> dict[str, str] | None:
+        """Parse log payload and return structured data.
+
+        Args:
+            payload: Raw payload from Zenoh sample.
+
+        Returns:
+            Parsed log data as dictionary or None if parsing fails.
+        """
+        try:
+            payload_str = payload.to_bytes().decode("utf-8")
+            if not payload_str.strip():
+                logger.debug("Received empty log payload")
+                return None
+
+            log_data = json.loads(payload_str)
+
+            if not isinstance(log_data, dict):
+                logger.warning(
+                    f"Invalid log data format: expected dict, got {type(log_data)}"
+                )
+                return None
+
+            return log_data
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            logger.warning(f"Failed to parse log payload: {e}")
+            return None
+
+    def _display_server_log(self, log_data: dict[str, str]) -> None:
+        """Display formatted server log message.
+
+        Args:
+            log_data: Parsed log data dictionary.
+        """
+        # Extract log information with safe defaults
+        timestamp = log_data.get("timestamp", "")
+        message = log_data.get("message", "")
+        source = log_data.get("source", "unknown")
+
+        # Validate critical fields
+        if not message:
+            logger.debug("Received log with empty message")
+            return
+
+        # Log the server message with clear identification
+        logger.info(f"[SERVER_LOG] [{timestamp}] [{source}] {message}")
+
+    def is_active(self) -> bool:
+        """Check if the log subscriber is active.
+
+        Returns:
+            True if subscriber is active, False otherwise.
+        """
+        return self._log_subscriber is not None
+
+    def shutdown(self) -> None:
+        """Clean up the log subscriber and release resources."""
+        if self._log_subscriber is not None:
+            try:
+                self._log_subscriber.undeclare()
+                self._log_subscriber = None
+            except Exception as e:
+                logger.error(f"Error cleaning up log subscriber: {e}")
+
+    def get_status(self) -> dict[str, Any]:
+        """Get the current status of the log subscriber.
+
+        Returns:
+            Dictionary containing status information:
+                - is_active: Whether the subscriber is active
+                - topic: The topic being subscribed to
+        """
+        return {
+            "is_active": self.is_active(),
+            "topic": "logs",
+        }

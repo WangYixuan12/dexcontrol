@@ -55,7 +55,7 @@ class Head(RobotJointComponent):
         super().__init__(
             state_sub_topic=configs.state_sub_topic,
             control_pub_topic=configs.control_pub_topic,
-            state_message_type=dexcontrol_msg_pb2.HeadState,
+            state_message_type=dexcontrol_msg_pb2.MotorStateWithTorque,
             zenoh_session=zenoh_session,
             joint_name=configs.joint_name,
             joint_limit=configs.joint_limit
@@ -164,9 +164,9 @@ class Head(RobotJointComponent):
             )
 
         # Create and send control message
-        control_msg = dexcontrol_msg_pb2.HeadCommand()
-        control_msg.joint_pos.extend(joint_pos.tolist())
-        control_msg.joint_vel.extend(joint_vel.tolist())
+        control_msg = dexcontrol_msg_pb2.MotorPosVelCommand()
+        control_msg.pos.extend(joint_pos.tolist())
+        control_msg.vel.extend(joint_vel.tolist())
         self._publish_control(control_msg)
 
         # Wait if specified
@@ -202,7 +202,8 @@ class Head(RobotJointComponent):
 
         for reply in replies:
             if reply.ok is not None and reply.ok.payload is not None:
-                logger.info(reply.ok.payload.to_string())
+                # TODO: handle the reply message of head mode
+                pass
         time.sleep(0.5)
 
     def get_joint_limit(self) -> Float[np.ndarray, "3 2"] | None:
