@@ -73,36 +73,36 @@ class VegaConfig:
             },
         )
     )
-    left_hand: HandConfig = field(
-        default_factory=lambda: HandConfig(
-            state_sub_topic="state/hand/left",
-            control_pub_topic="control/hand/left",
-            touch_sensor_sub_topic="state/hand/left/touch",
-            joint_name=[
-                "L_th_j1",
-                "L_ff_j1",
-                "L_mf_j1",
-                "L_rf_j1",
-                "L_lf_j1",
-                "L_th_j0",
-            ],
-        )
-    )
-    right_hand: HandConfig = field(
-        default_factory=lambda: HandConfig(
-            state_sub_topic="state/hand/right",
-            control_pub_topic="control/hand/right",
-            touch_sensor_sub_topic="state/hand/right/touch",
-            joint_name=[
-                "R_th_j1",
-                "R_ff_j1",
-                "R_mf_j1",
-                "R_rf_j1",
-                "R_lf_j1",
-                "R_th_j0",
-            ],
-        )
-    )
+    # left_hand: HandConfig = field(
+    #     default_factory=lambda: HandConfig(
+    #         state_sub_topic="state/hand/left",
+    #         control_pub_topic="control/hand/left",
+    #         touch_sensor_sub_topic="state/hand/left/touch",
+    #         joint_name=[
+    #             "L_th_j1",
+    #             "L_ff_j1",
+    #             "L_mf_j1",
+    #             "L_rf_j1",
+    #             "L_lf_j1",
+    #             "L_th_j0",
+    #         ],
+    #     )
+    # )
+    # right_hand: HandConfig = field(
+    #     default_factory=lambda: HandConfig(
+    #         state_sub_topic="state/hand/right",
+    #         control_pub_topic="control/hand/right",
+    #         touch_sensor_sub_topic="state/hand/right/touch",
+    #         joint_name=[
+    #             "R_th_j1",
+    #             "R_ff_j1",
+    #             "R_mf_j1",
+    #             "R_rf_j1",
+    #             "R_lf_j1",
+    #             "R_th_j0",
+    #         ],
+    #     )
+    # )
     head: HeadConfig = field(default_factory=HeadConfig)
     torso: TorsoConfig = field(default_factory=TorsoConfig)
     chassis: ChassisConfig = field(default_factory=ChassisConfig)
