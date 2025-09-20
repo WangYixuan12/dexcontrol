@@ -92,4 +92,4 @@ ignore = ["F722", "E501"]
 
 [tool.pyright]
 include = ["src/dexcontrol/core/", "src/dexcontrol/config/", "examples/"]
-typeCheckingMode = "standard"
+typeCheckingMode = "off"

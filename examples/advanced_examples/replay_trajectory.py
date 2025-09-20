@@ -329,10 +329,10 @@ def replay_trajectory(
     )
     robot.torso.go_to_pose("crouch20_medium", wait_time=5.0, exit_on_reach=True)
 
-    if robot.have_hand("left"):
-        robot.left_hand.close_hand()
-    if robot.have_hand("right"):
-        robot.right_hand.close_hand()
+    # if robot.have_hand("left"):
+    #     robot.left_hand.close_hand()
+    # if robot.have_hand("right"):
+    #     robot.right_hand.close_hand()
 
     input("Press Enter to start the replay...")
     # Move to start position

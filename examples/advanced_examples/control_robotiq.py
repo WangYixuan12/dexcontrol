@@ -45,12 +45,12 @@ def main():
         right_arm.send_ee_pass_through_message(right_hand_data)
         time.sleep(1.0)
         
-        print("opening hand")
-        right_hand_data = bytes.fromhex(
-            "09 10 03 E8 00 03 06 09 00 00 00 FF FF 72 19"
-        )
-        right_arm.send_ee_pass_through_message(right_hand_data)
-        time.sleep(1.0)
+        # print("opening hand")
+        # right_hand_data = bytes.fromhex(
+        #     "09 10 03 E8 00 03 06 09 00 00 00 FF FF 72 19"
+        # )
+        # right_arm.send_ee_pass_through_message(right_hand_data)
+        # time.sleep(1.0)
 
     # Optionally, shutdown the robot after use
     bot.shutdown()

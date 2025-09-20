@@ -109,12 +109,12 @@ def fold_robot(safe_motion: bool = True) -> None:
 
     with Robot() as bot:
         # Close hands first
-        if bot.have_hand("left"):
-            logger.info("Closing hands before folding arms")
-            bot.left_hand.close_hand()
-        if bot.have_hand("right"):
-            logger.info("Closing hands before folding arms")
-            bot.right_hand.close_hand(wait_time=2.0)
+        # if bot.have_hand("left"):
+        #     logger.info("Closing hands before folding arms")
+        #     bot.left_hand.close_hand()
+        # if bot.have_hand("right"):
+        #     logger.info("Closing hands before folding arms")
+        #     bot.right_hand.close_hand(wait_time=2.0)
 
         # Check if arms are already folded
         arms_folded = bot.left_arm.is_pose_reached(
