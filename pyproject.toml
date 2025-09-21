@@ -32,6 +32,8 @@ dependencies = [
     "jaxtyping>=0.2.38",
     "rich",
     "opencv-python>=4.11.0",
+    "matplotlib",
+    "tyro",
 
     # performance enhancement for asyncio (Unix-only)
     "uvloop>=0.17.0; sys_platform != 'win32'",

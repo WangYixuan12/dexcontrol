@@ -69,8 +69,8 @@ def interpolate_poses(start_pose: np.ndarray, end_pose: np.ndarray) -> np.ndarra
     
     interp_poses = []
     for i in range(num_steps):
-        pos_t = min(step_pos * i / rel_pos, 1.0)
-        rot_t = min(step_rot * i / rel_rot, 1.0)
+        pos_t = min(step_pos * i / (rel_pos + 1e-6), 1.0)
+        rot_t = min(step_rot * i / (rel_rot + 1e-6), 1.0)
         interp_R = pr.matrix_slerp(start_R, end_R, rot_t)
         interp_t = start_t + (end_t - start_t) * pos_t
         interp_pose = np.concatenate([interp_R, interp_t[:, None]], axis=1)
@@ -92,7 +92,7 @@ class BaseIKController:
         visualize (bool): Whether to enable visualization.
     """
 
-    def __init__(self, bot: Robot | None = None, visualize: bool = True):
+    def __init__(self, bot: Robot | None = None, visualize: bool = True, use_custom_kin_helper: bool = True):
         """Initialize the arm IK controller.
 
         Args:
@@ -113,6 +113,12 @@ class BaseIKController:
         self.visualize = visualize
 
         self.arm_dof = 7  # Number of degrees of freedom in the arms
+        self.use_custom_kin_helper = use_custom_kin_helper
+        if use_custom_kin_helper:
+            from yixuan_utilities.kinematics_helper import KinHelper
+            self.kin_helper = KinHelper("vega_with_robotiq")
+        else:
+            self.kin_helper = None
 
         # Get initial joint positions
         try:
@@ -269,6 +275,27 @@ class BaseIKController:
         arm_joint_indices = [f"{arm_prefix}_arm_j{i + 1}" for i in range(self.arm_dof)]
         return np.array([qpos_dict[joint_name] for joint_name in arm_joint_indices])
     
+    def get_sapien_qpos(self) -> np.ndarray:
+        """Get joint positions compatiable with sapien convention
+        
+        Returns:
+            np.ndarray: joint positions compatiable with sapien convention
+        """
+        left_arm_qpos = self.bot.left_arm.get_joint_pos()
+        right_arm_qpos = self.bot.right_arm.get_joint_pos()
+        torso_qpos = self.bot.torso.get_joint_pos()
+        head_qpos = self.bot.head.get_joint_pos()
+        wheel_qpos = np.zeros(6)
+        left_joint_names = [f"L_arm_j{i+1}" for i in range(7)]
+        right_joint_names = [f"R_arm_j{i+1}" for i in range(7)]
+        torso_joint_names = [f"torso_j{i+1}" for i in range(3)]
+        head_joint_names = [f"head_j{i+1}" for i in range(3)]
+        wheel_joint_names = [f"wheel_j{i+1}" for i in range(6)]
+        all_qpos = np.concatenate([left_arm_qpos, right_arm_qpos, torso_qpos, head_qpos, wheel_qpos])
+        all_joint_names = left_joint_names + right_joint_names + torso_joint_names + head_joint_names + wheel_joint_names
+        sapien_qpos = self.kin_helper.convert_to_sapien_joint_order(all_qpos, all_joint_names)
+        return sapien_qpos
+
     def move_to_pose(self, target_pose: np.ndarray, arm_side: str) -> None:
         """Move the specified arm to a pose.
 
@@ -285,37 +312,65 @@ class BaseIKController:
         if self.motion_manager.local_ik_solver is None:
             raise RuntimeError("Local IK solver is not initialized")
 
-        current_qpos = self.motion_manager.get_joint_pos()
-        assert isinstance(current_qpos, np.ndarray)
 
-        curr_poses_dict = self.motion_manager.fk(
-            frame_names=self.motion_manager.target_frames,
-            qpos=current_qpos,
-            update_robot_state=False,
-        )
-        base_t_curr_pose = curr_poses_dict[arm_side + "_ee"].np
-        
-        trajs = interpolate_poses(base_t_curr_pose, target_pose)
-        for pose in trajs:
-            if arm_side == "L":
-                target_poses_dict = {
-                    "L_ee": pose,
-                    "R_ee": curr_poses_dict["R_ee"].np,
-                }
-            elif arm_side == "R":
-                target_poses_dict = {
-                    "R_ee": pose,
-                    "L_ee": curr_poses_dict["L_ee"].np,
-                }
-            
-            qpos_dict, is_in_collision, is_within_joint_limits = (
-                self.motion_manager.local_ik_solver.solve_ik(target_poses_dict)
+        # get the current pose
+        if self.use_custom_kin_helper:
+            sapien_qpos = self.get_sapien_qpos()
+            curr_poses_dict = self.kin_helper.compute_fk_from_link_names(sapien_qpos, [f"{arm_side}_robotiq"])
+            base_t_curr_pose = curr_poses_dict[f"{arm_side}_robotiq"]
+        else:
+            current_qpos = self.motion_manager.get_joint_pos()
+            assert isinstance(current_qpos, np.ndarray)
+
+            curr_poses_dict = self.motion_manager.fk(
+                frame_names=self.motion_manager.target_frames,
+                qpos=current_qpos,
+                update_robot_state=False,
             )
-            qval = np.zeros(7)
-            for i in range(7):
-                qval[i] = qpos_dict[f'{arm_side}_arm_j{i+1}']
-            self.bot.right_arm.set_joint_pos(qval)
-            self.motion_manager.set_joint_pos(qpos_dict)
+            base_t_curr_pose = curr_poses_dict[arm_side + "_ee"].np
+
+        # interpolate the poses
+        trajs = interpolate_poses(base_t_curr_pose, target_pose)
+        # hack to make the final alignment work
+        trajs = np.concatenate([trajs, np.tile(target_pose[None, :, :], (10, 1, 1))])
+        for pose in trajs:
+            if self.use_custom_kin_helper:
+                active_qmask = np.zeros(self.kin_helper.sapien_robot.dof, dtype=bool)
+                for j_idx, joint in enumerate(self.kin_helper.sapien_robot.get_active_joints()):
+                    if f"{arm_side}_arm_" in joint.name:
+                        active_qmask[j_idx] = True
+                eef_idx = -1
+                for l_idx, link in enumerate(self.kin_helper.sapien_robot.get_links()):
+                    if link.name == f"{arm_side}_robotiq":
+                        eef_idx = l_idx
+                        break
+                curr_qpos = self.get_sapien_qpos()
+                qpos = self.kin_helper.compute_ik_from_mat(curr_qpos, pose, active_qmask=active_qmask, eef_idx=eef_idx)
+                qval = qpos[active_qmask]
+            else:
+                if arm_side == "L":
+                    target_poses_dict = {
+                        "L_ee": pose,
+                        "R_ee": curr_poses_dict["R_ee"].np,
+                    }
+                elif arm_side == "R":
+                    target_poses_dict = {
+                        "R_ee": pose,
+                        "L_ee": curr_poses_dict["L_ee"].np,
+                    }
+                
+                qpos_dict, is_in_collision, is_within_joint_limits = (
+                    self.motion_manager.local_ik_solver.solve_ik(target_poses_dict)
+                )
+                qval = np.zeros(7)
+                for i in range(7):
+                    qval[i] = qpos_dict[f'{arm_side}_arm_j{i+1}']
+                self.motion_manager.set_joint_pos(qpos_dict)
+            
+            if arm_side == "R":
+                self.bot.right_arm.set_joint_pos(qval)
+            elif arm_side == "L":
+                self.bot.left_arm.set_joint_pos(qval)
             time.sleep(0.01)
 
 
@@ -323,25 +378,22 @@ def main() -> None:
     """Move the right arm to a pose."""
     check_board_size = 0.05
     base_t_right_eef = np.array(
-        [[-1.0, 0.0, 0.0, 0.35],
-         [0.0, 1.0, 0.0, -0.13],
-         [0.0, 0.0, -1.0, 0.93],
+        [[-1.0, 0.0, 0.0, 0.40],
+         [0.0, 1.0, 0.0, -0.28],
+         [0.0, 0.0, -1.0, 0.69],
          [0.0, 0.0, 0.0, 1.0]]
     )
-    ik_controller = BaseIKController(visualize=False)
+    ik_controller = BaseIKController(visualize=False, use_custom_kin_helper=True)
     ik_controller.move_to_pose(base_t_right_eef, "R")
-    # width = 5
-    # height = 5
-    # for i in range(width):
-    #     for j in range(height):
-    #         base_t_right_eef = np.array(
-    #             [[-1.0, 0.0, 0.0, 0.35 + j * check_board_size],
-    #              [0.0, 1.0, 0.0, -0.28 + i * check_board_size],
-    #              [0.0, 0.0, -1.0, 0.93],
-    #              [0.0, 0.0, 0.0, 1.0]]
-    #         )
-    #         ik_controller.move_to_pose(base_t_right_eef, "R")
-    #         time.sleep(5)
+    width = 4
+    height = 5
+    for i in range(width):
+        for j in range(height):
+            new_pose = base_t_right_eef.copy()
+            new_pose[0, 3] += j * check_board_size
+            new_pose[1, 3] += i * check_board_size
+            ik_controller.move_to_pose(new_pose, "R")
+            time.sleep(5)
 
 
 if __name__ == "__main__":
