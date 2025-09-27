@@ -15,7 +15,6 @@ communication. It handles joint position and velocity control and state monitori
 """
 
 import numpy as np
-import zenoh
 from jaxtyping import Float
 
 from dexcontrol.config.core import TorsoConfig
@@ -37,20 +36,17 @@ class Torso(RobotJointComponent):
     def __init__(
         self,
         configs: TorsoConfig,
-        zenoh_session: zenoh.Session,
     ) -> None:
         """Initialize the torso controller.
 
         Args:
             configs: Torso configuration parameters containing communication topics
                 and default velocity settings.
-            zenoh_session: Active Zenoh communication session for message passing.
         """
         super().__init__(
             state_sub_topic=configs.state_sub_topic,
             control_pub_topic=configs.control_pub_topic,
             state_message_type=dexcontrol_msg_pb2.MotorStateWithCurrent,
-            zenoh_session=zenoh_session,
             joint_name=configs.joint_name,
             joint_limit=configs.joint_limit
             if hasattr(configs, "joint_limit")

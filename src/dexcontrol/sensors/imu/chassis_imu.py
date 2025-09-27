@@ -8,23 +8,21 @@
 # 2. Commercial License
 #    For commercial licensing terms, contact: contact@dexmate.ai
 
-"""Ultrasonic sensor implementations using Zenoh subscribers.
+"""Chassis IMU sensor implementation using DexComm subscribers.
 
-This module provides ultrasonic sensor classes that use the generic
-subscriber for distance measurements.
+This module provides IMU sensor class for chassis IMU data
+using DexComm's Raw API.
 """
 
-from typing import Literal, cast
+from typing import Dict, List, Optional
 
 import numpy as np
-import zenoh
 
-from dexcontrol.proto import dexcontrol_msg_pb2
-from dexcontrol.utils.subscribers import ProtobufZenohSubscriber
+from dexcontrol.comm import create_imu_subscriber
 
 
 class ChassisIMUSensor:
-    """Chassis IMU sensor using Zenoh subscriber.
+    """Chassis IMU sensor using DexComm subscriber.
 
     This sensor provides IMU data from the chassis
     """
@@ -32,41 +30,35 @@ class ChassisIMUSensor:
     def __init__(
         self,
         configs,
-        zenoh_session: zenoh.Session,
     ) -> None:
-        """Initialize the ultrasonic sensor.
+        """Initialize the chassis IMU sensor.
 
         Args:
-            configs: Configuration for the ultrasonic sensor.
-            zenoh_session: Active Zenoh session for communication.
+            configs: Configuration for the chassis IMU sensor.
         """
         self._name = configs.name
 
-        # Create the generic subscriber with JSON decoder
-        self._subscriber = ProtobufZenohSubscriber(
+        # Create IMU subscriber using DexComm integration
+        self._subscriber = create_imu_subscriber(
             topic=configs.topic,
-            zenoh_session=zenoh_session,
-            message_type=dexcontrol_msg_pb2.IMUState,
-            name=f"{self._name}_subscriber",
-            enable_fps_tracking=configs.enable_fps_tracking,
-            fps_log_interval=configs.fps_log_interval,
         )
 
 
     def shutdown(self) -> None:
-        """Shutdown the ultrasonic sensor."""
+        """Shutdown the chassis IMU sensor."""
         self._subscriber.shutdown()
 
     def is_active(self) -> bool:
-        """Check if the ultrasonic sensor is actively receiving data.
+        """Check if the chassis IMU sensor is actively receiving data.
 
         Returns:
             True if receiving data, False otherwise.
         """
-        return self._subscriber.is_active()
+        data = self._subscriber.get_latest()
+        return data is not None
 
     def wait_for_active(self, timeout: float = 5.0) -> bool:
-        """Wait for the ultrasonic sensor to start receiving data.
+        """Wait for the chassis IMU sensor to start receiving data.
 
         Args:
             timeout: Maximum time to wait in seconds.
@@ -74,80 +66,108 @@ class ChassisIMUSensor:
         Returns:
             True if sensor becomes active, False if timeout is reached.
         """
-        return self._subscriber.wait_for_active(timeout)
+        msg = self._subscriber.wait_for_message(timeout)
+        return msg is not None
 
-    def get_obs(self, obs_keys: list[Literal['ang_vel', 'acc', 'quat']] | None = None) -> dict[Literal['ang_vel', 'acc', 'quat', 'timestamp_ns'], np.ndarray]:
-        """Get observation data for the ZED IMU sensor.
+    def get_obs(self, obs_keys: Optional[List[str]] = None) -> Optional[Dict[str, np.ndarray]]:
+        """Get observation data for the chassis IMU sensor.
 
         Args:
             obs_keys: List of observation keys to retrieve. If None, returns all available data.
-                     Valid keys: ['ang_vel', 'acc', 'quat']
+                     Valid keys: ['ang_vel', 'acc', 'quat', 'mag', 'timestamp']
 
         Returns:
             Dictionary with observation data including all IMU measurements.
             Keys are mapped as follows:
-            - 'ang_vel': Angular velocity from 'angular_velocity'
-            - 'acc': Linear acceleration from 'acceleration'
-            - 'quat': Orientation quaternion from 'orientation', in wxyz convention
+            - 'ang_vel': Angular velocity from 'gyro'
+            - 'acc': Linear acceleration from 'acc'
+            - 'quat': Orientation quaternion from 'quat' [w, x, y, z]
+            - 'mag': Magnetometer from 'mag' (if available)
             - 'timestamp_ns': Timestamp in nanoseconds
         """
         if obs_keys is None:
             obs_keys = ['ang_vel', 'acc', 'quat']
 
-        data = self._subscriber.get_latest_data()
-        data = cast(dexcontrol_msg_pb2.IMUState, data)
+        data = self._subscriber.get_latest()
         if data is None:
-            raise RuntimeError("No IMU data available")
+            return None
 
         obs_out = {}
 
+        # Add timestamp if available
+        if 'timestamp' in data:
+            obs_out['timestamp_ns'] = data['timestamp']
+
         for key in obs_keys:
             if key == 'ang_vel':
-                obs_out[key] = np.array([data.gyro_x, data.gyro_y, data.gyro_z])
+                obs_out[key] = data.get('gyro', np.zeros(3))
             elif key == 'acc':
-                obs_out[key] = np.array([data.acc_x, data.acc_y, data.acc_z])
+                obs_out[key] = data.get('acc', np.zeros(3))
             elif key == 'quat':
-                obs_out[key] = np.array([data.quat_w, data.quat_x, data.quat_y, data.quat_z])
-            else:
-                raise ValueError(f"Invalid observation key: {key}")
-
-        if hasattr(data, 'timestamp_ns'):
-            obs_out['timestamp_ns'] = data.timestamp_ns
+                obs_out[key] = data.get('quat', np.array([1.0, 0.0, 0.0, 0.0]))
+            elif key == 'mag' and 'mag' in data:
+                obs_out[key] = data['mag']
+            elif key == 'timestamp' and 'timestamp' in data:
+                obs_out['timestamp_ns'] = data['timestamp']
 
         return obs_out
 
-    def get_acceleration(self) -> np.ndarray:
-        """Get the latest linear acceleration from ZED IMU.
+    def get_acc(self) -> Optional[np.ndarray]:
+        """Get the latest linear acceleration from chassis IMU.
 
         Returns:
             Linear acceleration [x, y, z] in m/s² if available, None otherwise.
         """
-        return self.get_obs(obs_keys=['acc'])['acc']
+        data = self._subscriber.get_latest()
+        return data.get('acc') if data else None
 
-    def get_angular_velocity(self) -> np.ndarray:
-        """Get the latest angular velocity from ZED IMU.
+    def get_gyro(self) -> Optional[np.ndarray]:
+        """Get the latest angular velocity from chassis IMU.
 
         Returns:
             Angular velocity [x, y, z] in rad/s if available, None otherwise.
         """
-        return self.get_obs(obs_keys=['ang_vel'])['ang_vel']
+        data = self._subscriber.get_latest()
+        return data.get('gyro') if data else None
 
-    def get_orientation(self) -> np.ndarray:
-        """Get the latest orientation quaternion from ZED IMU.
-
-        Returns:
-            Orientation quaternion [x, y, z, w] if available, None otherwise.
-        """
-        return self.get_obs(obs_keys=['quat'])['quat']
-
-    @property
-    def fps(self) -> float:
-        """Get the current FPS measurement.
+    def get_quat(self) -> Optional[np.ndarray]:
+        """Get the latest orientation quaternion from chassis IMU.
 
         Returns:
-            Current frames per second measurement.
+            Orientation quaternion [w, x, y, z] if available, None otherwise.
+            Note: dexcomm uses [w, x, y, z] quaternion format.
         """
-        return self._subscriber.fps
+        data = self._subscriber.get_latest()
+        return data.get('quat') if data else None
+
+    def get_mag(self) -> Optional[np.ndarray]:
+        """Get the latest magnetometer reading from chassis IMU.
+
+        Returns:
+            Magnetic field [x, y, z] in µT if available, None otherwise.
+        """
+        data = self._subscriber.get_latest()
+        if not data or not isinstance(data, dict):
+            return None
+        return data.get('mag', None)
+
+    def has_mag(self) -> bool:
+        """Check if the chassis IMU has magnetometer data available.
+
+        Returns:
+            True if magnetometer data is available, False otherwise.
+        """
+        data = self._subscriber.get_latest()
+        if not data or not isinstance(data, dict):
+            return False
+        return 'mag' in data and data['mag'] is not None
+
+    # Backward compatibility aliases
+    get_acceleration = get_acc
+    get_angular_velocity = get_gyro
+    get_orientation = get_quat
+    get_magnetometer = get_mag
+    has_magnetometer = has_mag
 
     @property
     def name(self) -> str:

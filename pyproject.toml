@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dexcontrol"
-version = "0.3.0"
+version = "0.3.1"
 description = "A Python library of Sensing and Control for Dexmate's Robot"
 authors = [{ name = "Dexmate", email = "contact@dexmate.ai" }]
 classifiers = [
@@ -23,7 +23,6 @@ keywords = ["robot", "python", "control", "learning"]
 license = { file = "LICENSE" }
 readme = "README.md"
 dependencies = [
-    # Add your project dependencies here
     "protobuf>=6.31.0",
     "numpy>=1.26.4",
     "eclipse-zenoh>=1.2.0",
@@ -32,6 +31,7 @@ dependencies = [
     "jaxtyping>=0.2.38",
     "rich",
     "opencv-python>=4.11.0",
+    "dexcomm>=0.1.2",
 
     # performance enhancement for asyncio (Unix-only)
     "uvloop>=0.17.0; sys_platform != 'win32'",

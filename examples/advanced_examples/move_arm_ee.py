@@ -17,7 +17,6 @@ relative to their current pose.
 import numpy as np
 import tyro
 from dexmotion.tasks.move_to_relative_pose_task import MoveToRelativePoseTask
-from dexmotion.utils import robot_utils
 from loguru import logger
 
 from dexcontrol.robot import Robot
@@ -80,11 +79,8 @@ def main() -> None:
         raise ValueError("Visualizer is None")
 
     # Update visualization with the motion plan
-    move_to_relative_pose_task.motion_manager.visualizer.update_motion_plan(
+    move_to_relative_pose_task.motion_manager.visualize_motion_plan(
         qs_sample,
-        robot_utils.get_joint_names(
-            move_to_relative_pose_task.motion_manager.pin_robot
-        ),
         duration=duration if duration is not None else 1.0,
     )
 
@@ -94,10 +90,8 @@ def main() -> None:
 
     # Extract arm trajectories and execute on the robot
     trajectory = {"left_arm": qs_sample[:, :7], "right_arm": qs_sample[:, 7:14]}
-    bot.execute_trajectory(trajectory, control_hz=control_hz, relative=False)  # type: ignore
-
-    move_to_relative_pose_task.motion_manager.set_joint_pos(qs_sample[-1])
-    move_to_relative_pose_task.motion_manager.visualizer.clear_motion_plan()
+    bot.execute_trajectory(trajectory, control_hz=control_hz, relative=False)
+    bot.shutdown()
 
 
 if __name__ == "__main__":

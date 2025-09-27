@@ -17,9 +17,8 @@ subscriber for scan data.
 from typing import Any
 
 import numpy as np
-import zenoh
 
-from dexcontrol.utils.subscribers.lidar import LidarSubscriber
+from dexcontrol.comm import create_lidar_subscriber
 
 
 class RPLidarSensor:
@@ -32,26 +31,17 @@ class RPLidarSensor:
     def __init__(
         self,
         configs,
-        zenoh_session: zenoh.Session,
     ) -> None:
         """Initialize the LIDAR sensor.
 
         Args:
-            topic: Zenoh topic to subscribe to for LIDAR data.
-            zenoh_session: Active Zenoh session for communication.
-            name: Name for the sensor instance.
-            enable_fps_tracking: Whether to track and log FPS metrics.
-            fps_log_interval: Number of frames between FPS calculations.
+            configs: Configuration for the LIDAR sensor.
         """
         self._name = configs.name
 
         # Create the LIDAR subscriber
-        self._subscriber = LidarSubscriber(
-            topic=configs.topic,
-            zenoh_session=zenoh_session,
-            name=f"{self._name}_subscriber",
-            enable_fps_tracking=configs.enable_fps_tracking,
-            fps_log_interval=configs.fps_log_interval,
+        self._subscriber = create_lidar_subscriber(
+            topic=configs.topic
         )
 
 
@@ -65,7 +55,8 @@ class RPLidarSensor:
         Returns:
             True if receiving data, False otherwise.
         """
-        return self._subscriber.is_active()
+        data = self._subscriber.get_latest()
+        return data is not None
 
     def wait_for_active(self, timeout: float = 5.0) -> bool:
         """Wait for the LIDAR sensor to start receiving data.
@@ -76,7 +67,8 @@ class RPLidarSensor:
         Returns:
             True if sensor becomes active, False if timeout is reached.
         """
-        return self._subscriber.wait_for_active(timeout)
+        msg = self._subscriber.wait_for_message(timeout)
+        return msg is not None
 
     def get_obs(self) -> dict[str, Any] | None:
         """Get the latest LIDAR scan data.
@@ -89,7 +81,8 @@ class RPLidarSensor:
                 - qualities: Array of quality values (0-255) if available, None otherwise
                 - timestamp: Timestamp in nanoseconds (int)
         """
-        return self._subscriber.get_latest_data()
+        data = self._subscriber.get_latest()
+        return data
 
     def get_ranges(self) -> np.ndarray | None:
         """Get the latest range measurements.
@@ -97,7 +90,8 @@ class RPLidarSensor:
         Returns:
             Array of range measurements in meters if available, None otherwise.
         """
-        return self._subscriber.get_ranges()
+        data = self._subscriber.get_latest()
+        return data.ranges if data else None
 
     def get_angles(self) -> np.ndarray | None:
         """Get the latest angle measurements.
@@ -105,7 +99,8 @@ class RPLidarSensor:
         Returns:
             Array of angle measurements in radians if available, None otherwise.
         """
-        return self._subscriber.get_angles()
+        data = self._subscriber.get_latest()
+        return data.angles if data else None
 
     def get_qualities(self) -> np.ndarray | None:
         """Get the latest quality measurements.
@@ -113,7 +108,8 @@ class RPLidarSensor:
         Returns:
             Array of quality values (0-255) if available, None otherwise.
         """
-        return self._subscriber.get_qualities()
+        data = self._subscriber.get_latest()
+        return data.qualities if data else None
 
     def get_point_count(self) -> int:
         """Get the number of points in the latest scan.

@@ -15,7 +15,7 @@ using Zenoh subscribers for data communication.
 """
 
 # Import camera sensors
-from .camera import LuxonisCameraSensor, RGBCameraSensor, ZedCameraSensor
+from .camera import RGBCameraSensor, ZedCameraSensor
 
 # Import IMU sensors
 from .imu import ChassisIMUSensor, ZedIMUSensor
@@ -31,7 +31,6 @@ __all__ = [
     # Camera sensors
     "RGBCameraSensor",
     "ZedCameraSensor",
-    "LuxonisCameraSensor",
 
     # IMU sensors
     "ChassisIMUSensor",

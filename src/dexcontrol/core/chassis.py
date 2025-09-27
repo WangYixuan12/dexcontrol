@@ -17,13 +17,12 @@ Zenoh communication. It handles steering and wheel velocity control.
 import time
 
 import numpy as np
-import zenoh
+from dexcomm.utils import RateLimiter
 from jaxtyping import Float
 
 from dexcontrol.config.core import ChassisConfig
 from dexcontrol.core.component import RobotJointComponent
 from dexcontrol.proto import dexcontrol_msg_pb2
-from dexcontrol.utils.rate_limiter import RateLimiter
 
 
 class ChassisSteer(RobotJointComponent):
@@ -36,20 +35,17 @@ class ChassisSteer(RobotJointComponent):
     def __init__(
         self,
         configs: ChassisConfig,
-        zenoh_session: zenoh.Session,
     ) -> None:
         """Initialize the hand controller.
 
         Args:
             configs: Hand configuration parameters containing communication topics
                 and predefined hand positions.
-            zenoh_session: Active Zenoh communication session for message passing.
         """
         super().__init__(
             state_sub_topic=configs.steer_state_sub_topic,
             control_pub_topic=configs.steer_control_pub_topic,
             state_message_type=dexcontrol_msg_pb2.MotorStateWithCurrent,
-            zenoh_session=zenoh_session,
             joint_name=configs.steer_joint_name,
         )
 
@@ -77,19 +73,16 @@ class ChassisDrive(RobotJointComponent):
     def __init__(
         self,
         configs: ChassisConfig,
-        zenoh_session: zenoh.Session,
     ) -> None:
         """Initialize the base controller.
 
         Args:
             configs: Base configuration parameters containing communication topics.
-            zenoh_session: Active Zenoh communication session for message passing.
         """
         super().__init__(
             state_sub_topic=configs.drive_state_sub_topic,
             control_pub_topic=configs.drive_control_pub_topic,
             state_message_type=dexcontrol_msg_pb2.MotorStateWithCurrent,
-            zenoh_session=zenoh_session,
             joint_name=configs.drive_joint_name,
         )
 
@@ -126,16 +119,14 @@ class Chassis:
     def __init__(
         self,
         configs: ChassisConfig,
-        zenoh_session: zenoh.Session,
     ) -> None:
         """Initialize the base controller.
 
         Args:
             configs: Base configuration parameters containing communication topics.
-            zenoh_session: Active Zenoh communication session for message passing.
         """
-        self.chassis_steer = ChassisSteer(configs, zenoh_session)
-        self.chassis_drive = ChassisDrive(configs, zenoh_session)
+        self.chassis_steer = ChassisSteer(configs)
+        self.chassis_drive = ChassisDrive(configs)
 
         self.max_vel = configs.max_vel
         self._center_to_wheel_axis_dist = configs.center_to_wheel_axis_dist

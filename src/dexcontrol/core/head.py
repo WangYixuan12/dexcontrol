@@ -15,17 +15,16 @@ communication. It handles joint position and velocity control, mode setting, and
 state monitoring.
 """
 
-import time
-from typing import Final, Literal
+from typing import Literal
 
 import numpy as np
-import zenoh
+from dexcomm import call_service
 from jaxtyping import Float
-from loguru import logger
 
 from dexcontrol.config.core import HeadConfig
 from dexcontrol.core.component import RobotJointComponent
 from dexcontrol.proto import dexcontrol_msg_pb2, dexcontrol_query_pb2
+from dexcontrol.utils.comm_helper import get_zenoh_config_path
 from dexcontrol.utils.os_utils import resolve_key_name
 
 
@@ -44,19 +43,16 @@ class Head(RobotJointComponent):
     def __init__(
         self,
         configs: HeadConfig,
-        zenoh_session: zenoh.Session,
     ) -> None:
         """Initialize the head controller.
 
         Args:
             configs: Configuration parameters for the head including communication topics.
-            zenoh_session: Active Zenoh communication session for message passing.
         """
         super().__init__(
             state_sub_topic=configs.state_sub_topic,
             control_pub_topic=configs.control_pub_topic,
             state_message_type=dexcontrol_msg_pb2.MotorStateWithTorque,
-            zenoh_session=zenoh_session,
             joint_name=configs.joint_name,
             joint_limit=configs.joint_limit
             if hasattr(configs, "joint_limit")
@@ -67,9 +63,8 @@ class Head(RobotJointComponent):
             pose_pool=configs.pose_pool,
         )
 
-        self.mode_querier: Final[zenoh.Querier] = zenoh_session.declare_querier(
-            resolve_key_name(configs.set_mode_query), timeout=2.0
-        )
+        # Store the query topic for later use with DexComm
+        self._mode_query_topic = resolve_key_name(configs.set_mode_query)
         assert self._joint_vel_limit is not None, "joint_vel_limit is not set"
 
     def set_joint_pos(
@@ -198,13 +193,15 @@ class Head(RobotJointComponent):
 
         query_msg = dexcontrol_query_pb2.SetHeadMode()
         query_msg.mode = mode_map[mode]
-        replies = self.mode_querier.get(payload=query_msg.SerializeToString())
 
-        for reply in replies:
-            if reply.ok is not None and reply.ok.payload is not None:
-                # TODO: handle the reply message of head mode
-                pass
-        time.sleep(0.5)
+        call_service(
+            self._mode_query_topic,
+            request=query_msg,
+            timeout=1.0,
+            config=get_zenoh_config_path(),
+            request_serializer=lambda x: x.SerializeToString(),
+            response_deserializer=None,
+        )
 
     def get_joint_limit(self) -> Float[np.ndarray, "3 2"] | None:
         """Get the joint limits of the head.
@@ -225,16 +222,7 @@ class Head(RobotJointComponent):
         """Clean up Zenoh resources for the head component."""
         self.stop()
         super().shutdown()
-        try:
-            if hasattr(self, "mode_querier") and self.mode_querier:
-                self.mode_querier.undeclare()
-        except Exception as e:
-            # Don't log "Undeclared querier" errors as warnings - they're expected during shutdown
-            error_msg = str(e).lower()
-            if not ("undeclared" in error_msg or "closed" in error_msg):
-                logger.warning(
-                    f"Error undeclaring mode querier for {self.__class__.__name__}: {e}"
-                )
+        # No need to undeclare queriers when using DexComm
 
     def _process_joint_velocities(
         self,

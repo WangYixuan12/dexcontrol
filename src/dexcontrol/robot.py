@@ -25,7 +25,6 @@ from __future__ import annotations
 import os
 import signal
 import sys
-import threading
 import time
 import weakref
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
@@ -33,7 +32,8 @@ from typing import TYPE_CHECKING, Any, Final, Literal, cast
 import hydra.utils
 import numpy as np
 import omegaconf
-import zenoh
+from dexcomm import cleanup_session
+from dexcomm.utils import RateLimiter
 from loguru import logger
 from rich.console import Console
 from rich.table import Table
@@ -47,13 +47,7 @@ from dexcontrol.core.robot_query_interface import RobotQueryInterface
 from dexcontrol.sensors import Sensors
 from dexcontrol.utils.constants import ROBOT_NAME_ENV_VAR
 from dexcontrol.utils.os_utils import check_version_compatibility, get_robot_model
-from dexcontrol.utils.rate_limiter import RateLimiter
 from dexcontrol.utils.trajectory_utils import generate_linear_trajectory
-from dexcontrol.utils.zenoh_utils import (
-    close_zenoh_session_with_timeout,
-    create_zenoh_session,
-    wait_for_zenoh_cleanup,
-)
 
 if TYPE_CHECKING:
     from dexcontrol.core.arm import Arm
@@ -142,7 +136,6 @@ class Robot(RobotQueryInterface):
         self,
         robot_model: str | None = None,
         configs: VegaConfig | None = None,
-        zenoh_config_file: str | None = None,
         auto_shutdown: bool = True,
     ) -> None:
         """Initializes the Robot with the given configuration.
@@ -153,8 +146,6 @@ class Robot(RobotQueryInterface):
                 Ignored if configs is provided.
             configs: Configuration parameters for all robot components.
                 If None, will use the configuration specified by robot_model.
-            zenoh_config_file: Optional path to the zenoh config file.
-                Defaults to None to use system defaults.
             auto_shutdown: Whether to automatically register signal handlers for
                 graceful shutdown on program interruption. Default is True.
 
@@ -168,19 +159,18 @@ class Robot(RobotQueryInterface):
             robot_model = get_robot_model()
         self._robot_model: Final[str] = robot_model
 
-        # Load configuration and initialize zenoh session
+        # Load configuration
         self._configs: Final[VegaConfig] = configs or get_vega_config(robot_model)
-        self._zenoh_session: zenoh.Session = create_zenoh_session(zenoh_config_file)
 
-        # Initialize ZenohQueryable parent class
-        super().__init__(self._zenoh_session, self._configs)
+        super().__init__(self._configs)
 
         self._robot_name: Final[str] = os.getenv(ROBOT_NAME_ENV_VAR, "robot")
         self._pv_components: list[str] = [
             "head",
             "torso",
         ]
-        self._log_subscriber = ServerLogSubscriber(self._zenoh_session)
+        # Note: zenoh_session no longer needed as DexComm handles sessions
+        self._log_subscriber = ServerLogSubscriber()
         self._hand_types: dict[str, HandType] = {}
 
         # Register for automatic shutdown on signals if enabled
@@ -280,7 +270,8 @@ class Robot(RobotQueryInterface):
 
     def _initialize_sensors(self) -> None:
         """Initialize sensors and wait for activation."""
-        self.sensors = Sensors(self._configs.sensors, self._zenoh_session)
+        # Note: zenoh_session no longer needed as DexComm handles sessions
+        self.sensors = Sensors(self._configs.sensors)
         self.sensors.wait_for_all_active()
 
     def _initialize_robot_components(self) -> None:
@@ -290,7 +281,6 @@ class Robot(RobotQueryInterface):
 
         initialized_components = []
         failed_components = []
-
         for component_name, component_config in config_dict.items():
             if component_name == "sensors":
                 continue
@@ -335,9 +325,8 @@ class Robot(RobotQueryInterface):
                     temp_config["hand_type"] = hand_type
 
                 # Instantiate component with error handling
-                component_instance = hydra.utils.instantiate(
-                    temp_config, zenoh_session=self._zenoh_session
-                )
+                # Note: zenoh_session no longer needed as DexComm handles sessions
+                component_instance = hydra.utils.instantiate(temp_config)
 
                 # Store component instance both as attribute and in tracking dictionaries
                 setattr(self, str(component_name), component_instance)
@@ -347,7 +336,6 @@ class Robot(RobotQueryInterface):
                 logger.error(f"Failed to initialize component {component_name}: {e}")
                 failed_components.append(component_name)
                 # Continue with other components rather than failing completely
-
         # Report initialization summary
         if failed_components:
             logger.warning(
@@ -614,22 +602,12 @@ class Robot(RobotQueryInterface):
         except Exception as e:  # pylint: disable=broad-except
             logger.debug(f"Error shutting down log subscriber: {e}")
 
-        # Close Zenoh session
-        close_zenoh_session_with_timeout(self._zenoh_session)
-        lingering_threads = wait_for_zenoh_cleanup()
-        if lingering_threads:
-            self._assist_clean_exit_if_needed()
+        # Cleanup DexComm shared session
+        try:
+            cleanup_session()
+        except Exception as e:
+            logger.debug(f"Session cleanup note: {e}")
         logger.info("Robot shutdown complete")
-
-    def _assist_clean_exit_if_needed(self) -> None:
-        """Assist with clean exit if this is the last robot and we're exiting."""
-        if (
-            not _active_robots  # No more active robots
-            and threading.current_thread() is threading.main_thread()  # In main thread
-            and not hasattr(sys, "ps1")  # Not in interactive mode
-        ):
-            logger.debug("Assisting clean exit due to lingering Zenoh threads")
-            sys.exit(0)
 
     def is_shutdown(self) -> bool:
         """Check if the robot has been shutdown.

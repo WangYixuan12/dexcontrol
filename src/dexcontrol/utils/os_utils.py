@@ -137,28 +137,14 @@ def validate_server_version(version_info: dict[str, Any]) -> None:
         return
 
     # Check each component's software version
-    components_below_min = []
-    for component_name, component_info in server_info.items():
-        if isinstance(component_info, dict):
-            software_version = component_info.get("software_version")
-            if software_version is not None:
-                try:
-                    # Convert to int if it's a string
-                    software_version_int = int(software_version)
-                    if software_version_int < dexcontrol.MIN_SOC_SOFTWARE_VERSION:
-                        components_below_min.append(
-                            (component_name, software_version_int)
-                        )
-                except (ValueError, TypeError) as e:
-                    logger.debug(
-                        f"Could not parse software version for {component_name}: {e}"
-                    )
-
-    # If any components are below minimum version, show warning
-    if components_below_min:
-        show_server_version_warning(
-            components_below_min, dexcontrol.MIN_SOC_SOFTWARE_VERSION
-        )
+    soc_info = server_info.get("soc", {})
+    software_version = soc_info.get("software_version", {})
+    if software_version is not None:
+        software_version_int = int(software_version)
+        if software_version_int < dexcontrol.MIN_SOC_SOFTWARE_VERSION:
+            show_server_version_warning(
+                [("soc", software_version_int)], dexcontrol.MIN_SOC_SOFTWARE_VERSION
+            )
 
 
 def show_server_version_warning(

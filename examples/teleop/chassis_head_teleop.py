@@ -19,10 +19,10 @@ import time
 
 import numpy as np
 import tyro
+from dexcomm.utils import RateLimiter
 from loguru import logger
 
 from dexcontrol.apps.dualsense_teleop_base import DualSenseTeleopBase
-from dexcontrol.utils.rate_limiter import RateLimiter
 
 
 class ChassisVelocityTeleopNode(DualSenseTeleopBase):

@@ -19,6 +19,7 @@ from typing import Literal
 
 import numpy as np
 import tyro
+from dexcomm.utils import RateLimiter
 from dexmotion.motion_manager import MotionManager
 from dexmotion.tasks.move_out_of_self_collision_task import MoveOutOfSelfCollisionTask
 from dexmotion.tasks.move_to_configuration_task import MoveToConfigurationTask
@@ -27,7 +28,6 @@ from loguru import logger
 
 from dexcontrol.core.arm import Arm
 from dexcontrol.robot import Robot
-from dexcontrol.utils.rate_limiter import RateLimiter
 
 
 class ArmSafeInitializer:

@@ -19,7 +19,6 @@ import os
 from typing import Final
 
 import tyro
-from init_arm_safe import ArmSafeInitializer
 from loguru import logger
 
 from dexcontrol.robot import Robot
@@ -142,6 +141,8 @@ def fold_robot(safe_motion: bool = True) -> None:
                     logger.info("Moving arms to intermediate position")
                     if safe_motion:
                         try:
+                            from init_arm_safe import ArmSafeInitializer
+
                             arm_safe_initializer = ArmSafeInitializer(
                                 control_hz=250,
                                 visualize=not is_remote,
