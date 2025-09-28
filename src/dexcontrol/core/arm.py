@@ -140,7 +140,7 @@ class Arm(RobotJointComponent):
         call_service(
             self._mode_query_topic,
             request=query_msg,
-            timeout=0.05,
+            timeout=3.0,
             config=get_zenoh_config_path(),
             request_serializer=lambda x: x.SerializeToString(),
             response_deserializer=None,

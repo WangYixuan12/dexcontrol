@@ -145,11 +145,11 @@ class RobotQueryInterface:
                     logger.warning(f"Invalid hand type format received: {hand_info}")
 
             # If no valid response received, assume v1 for backward compatibility
-            return {"left": HandType.HandF5D6_V1, "right": HandType.HandF5D6_V1}
+            return {"left": HandType.UNKNOWN, "right": HandType.UNKNOWN}
 
         except Exception as e:
-            logger.warning(f"Failed to query hand type: {e}. Assuming v1 hand types.")
-            return {"left": HandType.HandF5D6_V1, "right": HandType.HandF5D6_V1}
+            logger.warning(f"Failed to query hand type: {e}. V1 hand type unknown.")
+            return {"left": HandType.UNKNOWN, "right": HandType.UNKNOWN}
 
     def query_ntp(
         self,
