@@ -111,6 +111,7 @@ class DemoApp:
             start_time = time.time()
             left_rgb_sl = sl.Mat()
             depth_sl = sl.Mat()
+            confidence_sl = sl.Mat()
             zed_pose = sl.Pose()
             if self.zed.grab(runtime_parameters) == sl.ERROR_CODE.SUCCESS:
                 # Get the pose of the left eye
@@ -145,8 +146,10 @@ class DemoApp:
                 # Copy the newly arrived RGBD frame
                 self.zed.retrieve_image(left_rgb_sl, sl.VIEW.LEFT)   # BGRA by default
                 self.zed.retrieve_measure(depth_sl, sl.MEASURE.DEPTH)  # float32 meters
+                self.zed.retrieve_measure(confidence_sl, sl.MEASURE.CONFIDENCE)  # float32 meters
                 left_rgba = left_rgb_sl.get_data()     # HxWx4 uint8, LEFT
                 depth   = depth_sl.get_data()        # HxW float32, aligned to LEFT
+                confidence = confidence_sl.get_data().astype(np.uint8)
                 left_rgb_np  = left_rgba[:, :, :3][:, :, ::-1].copy()
 
                 joint_pos_dict = self.bot.get_joint_pos_dict(
@@ -161,7 +164,7 @@ class DemoApp:
                 self.episode_data["depth"].append((depth[..., None] * 1000).astype(np.uint16))
                 self.episode_data["intrinsics"].append(intrinsic_mat)
                 self.episode_data["extrinsics"].append(cam_mat)
-                self.episode_data["confidence"].append(np.ones_like(depth[..., None]))
+                self.episode_data["confidence"].append(confidence[..., None])
             end_time = time.time()
             print(f"FPS: {1 / (end_time - start_time)}")
         self.save_episode_data()
