@@ -46,7 +46,7 @@ class EStopConfig:
 class HeartbeatConfig:
     _target_: str = "dexcontrol.core.misc.Heartbeat"
     heartbeat_topic: str = "/heartbeat"
-    timeout_seconds: float = 1.0
+    timeout_seconds: float = 10.0
     enabled: bool = True  # Can be disabled via DEXCONTROL_DISABLE_HEARTBEAT=1
 
     def __post_init__(self):

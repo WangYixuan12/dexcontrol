@@ -16,7 +16,9 @@ control support for multiple teleoperation modes (joint space, Cartesian space).
 
 import os
 import copy
+import warnings
 import threading
+import cv2
 import time
 
 import tyro
@@ -27,7 +29,9 @@ from dexmotion.motion_manager import MotionManager
 from dexmotion.utils import robot_utils
 from loguru import logger
 
+import pyzed.sl as sl
 from dexcontrol.robot import Robot
+# from yixuan_utilities.kinematics_helper import KinHelper
 
 
 def is_running_remote() -> bool:
@@ -109,6 +113,9 @@ class BaseIKController:
             self.bot = Robot()
         else:
             self.bot = bot
+        
+        head_pos = np.array([-0.01, -0.02078687, 0.00514872])
+        self.bot.head.set_joint_pos(head_pos, wait_time=2.0, exit_on_reach=True)
 
         self.visualize = visualize
 
@@ -123,7 +130,7 @@ class BaseIKController:
         # Get initial joint positions
         try:
             joint_pos_dict = self.bot.get_joint_pos_dict(
-                component=["left_arm", "right_arm", "torso"]
+                component=["left_arm", "right_arm", "torso", "head"]
             )
             logger.info("Initial joint positions retrieved successfully")
         except Exception as e:
@@ -139,6 +146,14 @@ class BaseIKController:
                 init_visualizer=self.visualize,
                 initial_joint_configuration_dict=joint_pos_dict,
             )
+            self.fk_solver = MotionManager(
+                robot_type="vega-1",
+                init_visualizer=self.visualize,
+                initial_joint_configuration_dict=joint_pos_dict,
+                joints_to_lock=[],
+                apply_locked_joints=False,
+            )
+                
 
             logger.success("Motion Manager setup complete")
         except Exception as e:
@@ -359,9 +374,7 @@ class BaseIKController:
                         "L_ee": curr_poses_dict["L_ee"].np,
                     }
                 
-                qpos_dict, is_in_collision, is_within_joint_limits = (
-                    self.motion_manager.local_ik_solver.solve_ik(target_poses_dict)
-                )
+                qpos_dict, is_in_collision, is_within_joint_limits = self.motion_manager.ik(target_pose=target_poses_dict)
                 qval = np.zeros(7)
                 for i in range(7):
                     qval[i] = qpos_dict[f'{arm_side}_arm_j{i+1}']
@@ -374,25 +387,115 @@ class BaseIKController:
             time.sleep(0.01)
 
 
+def find_charuco_board_corners(img: np.ndarray) -> np.ndarray:
+    dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_250)
+
+    corners, ids, rejectedImgPoints = cv2.aruco.detectMarkers(
+        image=img,
+        dictionary=dictionary,
+        parameters=None,
+    )
+    return corners, ids
+
+class Camera:
+    def __init__(self):
+        self.zed = sl.Camera()
+
+    def open(self) -> None:
+        init_params = sl.InitParameters()
+        init_params.camera_resolution = sl.RESOLUTION.AUTO # Use HD720 or HD1200 video mode (default fps: 60)
+        init_params.coordinate_system = sl.COORDINATE_SYSTEM.RIGHT_HANDED_Y_UP # Use a right-handed Y-up coordinate system
+        init_params.coordinate_units = sl.UNIT.METER  # Set units in meters
+        init_params.depth_mode = sl.DEPTH_MODE.NEURAL
+
+        # Open the camera
+        err = self.zed.open(init_params)
+        if err != sl.ERROR_CODE.SUCCESS:
+            print("Camera Open : "+repr(err)+". Exit program.")
+            exit()
+    
+    def get_obs(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        runtime_parameters = sl.RuntimeParameters()
+        cam_info = self.zed.get_camera_information()
+        calib = cam_info.camera_configuration.calibration_parameters  # rectified pair
+
+        left_K = np.array([[calib.left_cam.fx, 0, calib.left_cam.cx],
+                           [0, calib.left_cam.fy, calib.left_cam.cy],
+                           [0, 0, 1]], dtype=np.float32)
+
+        left_rgb_sl = sl.Mat()
+        depth_sl = sl.Mat()
+        confidence_sl = sl.Mat()
+        if self.zed.grab(runtime_parameters) == sl.ERROR_CODE.SUCCESS:
+            # Copy the newly arrived RGBD frame
+            self.zed.retrieve_image(left_rgb_sl, sl.VIEW.LEFT)   # BGRA by default
+            self.zed.retrieve_measure(depth_sl, sl.MEASURE.DEPTH)  # float32 meters
+            self.zed.retrieve_measure(confidence_sl, sl.MEASURE.CONFIDENCE)  # float32 meters
+            left_rgba = left_rgb_sl.get_data()     # HxWx4 uint8, LEFT
+            depth   = depth_sl.get_data()        # HxW float32, aligned to LEFT
+            confidence = confidence_sl.get_data().astype(np.uint8)
+            left_rgb_np  = left_rgba[:, :, :3][:, :, ::-1]
+            return left_rgb_np.copy(), depth.copy(), confidence.copy(), left_K.copy()
+
+
+def draw_corners(img: np.ndarray, corners: np.ndarray) -> np.ndarray:
+    for corner in corners:
+        corner = corner.astype(np.int32)
+        cv2.circle(img, corner, 5, (0, 255, 0), -1)
+    return img
+
 def main() -> None:
-    """Move the right arm to a pose."""
-    check_board_size = 0.05
+    # Initialize Robot
+    ik_controller = BaseIKController(visualize=False, use_custom_kin_helper=False)
+    
+    # open camera and detect corners
+    cam = Camera()
+    cam.open()
+    while True:
+        rgb, depth, confidence, K = cam.get_obs()
+        if depth[~np.isnan(depth) & ~np.isinf(depth)].max() > 0:
+            break
+        cv2.imwrite('tmp.png', rgb)
+    corners, ids = find_charuco_board_corners(rgb)  # (col, row)
+    if len(corners) == 0:
+        warnings.warn('no markers detected')
+        return
+    
+    # get the positions of all corners in the camera frame
+    corners = np.concatenate(corners, axis=0)  # (B, N, 2)
+    corners = corners.reshape(-1, 2)  # (N, 2)
+    
+    vis_img = draw_corners(rgb.copy(), corners)
+    cv2.imwrite('tmp_vis.png', vis_img)
+    
+    tgt_img = draw_corners(rgb.copy(), corners[0:1])
+    cv2.imwrite('tmp_tgt.png', tgt_img)
+    
+    corners_z = depth[corners[:, 1].astype(int), corners[:, 0].astype(int)]  # (N,)
+    corners_x = (corners[:, 0] - K[0, 2]) * corners_z / K[0, 0]
+    corners_y = (corners[:, 1] - K[1, 2]) * corners_z / K[1, 1]
+    cam_t_corners = np.concatenate([corners_x[:, None], corners_y[:, None], corners_z[:, None]], axis=1)
+    
+    # FK
+    joint_pos_dict = ik_controller.bot.get_joint_pos_dict(["left_arm", "right_arm", "torso", "head"])
+    ik_controller.fk_solver.set_joint_pos(joint_pos_dict)
+    base_t_cam = ik_controller.fk_solver.fk(["zed_depth_frame"])["zed_depth_frame"].np
+
+    base_t_corners = base_t_cam @ np.concatenate(
+        [cam_t_corners.T, np.ones((1, cam_t_corners.shape[0]))], axis=0
+    )  # (4, N)
+    base_t_corners = base_t_corners[:3, :].T  # (N, 3)
+    
     base_t_right_eef = np.array(
-        [[-1.0, 0.0, 0.0, 0.39],
-         [0.0, 1.0, 0.0, -0.28],
-         [0.0, 0.0, -1.0, 0.99],
+        [[-1.0, 0.0, 0.0, 0.0],
+         [0.0, 1.0, 0.0, 0.0],
+         [0.0, 0.0, -1.0, 0.0],
          [0.0, 0.0, 0.0, 1.0]]
     )
-    ik_controller = BaseIKController(visualize=False, use_custom_kin_helper=False)
-    width = 4
-    height = 5
-    for i in range(width):
-        for j in range(height):
-            new_pose = base_t_right_eef.copy()
-            new_pose[0, 3] += j * check_board_size
-            new_pose[1, 3] += i * check_board_size
-            ik_controller.move_to_pose(new_pose, "R")
-            time.sleep(5)
+    base_t_right_eef[:3, 3] = base_t_corners[0]
+    base_t_right_eef[2, 3] += 0.25  # lift up 30cm
+
+    ik_controller.move_to_pose(base_t_right_eef, "R")
 
 
 if __name__ == "__main__":

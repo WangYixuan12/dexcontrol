@@ -18,6 +18,8 @@ identification. For optimal performance, it is recommended to:
 """
 
 from typing import Literal
+import time
+import copy
 
 import numpy as np
 import tyro
@@ -280,6 +282,20 @@ def _send_joint_commands(
             ]
             arms[arm].set_joint_pos(target_qpos)
 
+def compute_offset(time_since_start: float, time_per_edge: float, edge_len: float) -> np.array:
+    """Compute offset based on time since start, following a square with edge_len
+    """
+    edge_idx = int(time_since_start / time_per_edge) % 4
+    num_loops = int(time_since_start / (4 * time_per_edge))
+    edge_offset = (time_since_start - num_loops * 4 * time_per_edge - edge_idx * time_per_edge) / time_per_edge
+    if edge_idx == 0:
+        return np.array([0.0, edge_offset * edge_len, 0.0])
+    elif edge_idx == 1:
+        return np.array([0.0, edge_len, edge_offset * edge_len])
+    elif edge_idx == 2:
+        return np.array([0.0, edge_len - edge_len * edge_offset, edge_len])
+    elif edge_idx == 3:
+        return np.array([0.0, 0.0, edge_len - edge_len * edge_offset])
 
 def main(
     zero_force: bool = True,
@@ -341,6 +357,10 @@ def main(
     pin_robot = motion_manager.pin_robot
     assert pin_robot is not None
 
+    time_per_edge = 10.0
+    edge_len = 0.15
+    start_time = time.time()
+
     try:
         while True:
             # Get current wrench states
@@ -361,15 +381,18 @@ def main(
                     bot.get_joint_pos_dict(component=["left_arm", "right_arm"])
                 )
 
-                # Compute current end-effector poses
-                ee_pose_result = motion_manager.fk(
-                    frame_names=motion_manager.target_frames,
-                    qpos=motion_manager.get_joint_pos(),
-                )
-                ee_pose: dict[str, np.ndarray] = {
-                    arm: ee_pose_result[arm_ee_name[arm]].np  # type: ignore
-                    for arm in ("left", "right")
-                }
+                # # Compute current end-effector poses
+                # ee_pose_result = motion_manager.fk(
+                #     frame_names=motion_manager.target_frames,
+                #     qpos=motion_manager.get_joint_pos(),
+                # )
+                # ee_pose: dict[str, np.ndarray] = {
+                #     arm: ee_pose_result[arm_ee_name[arm]].np  # type: ignore
+                #     for arm in ("left", "right")
+                # }
+
+                ee_pose = copy.deepcopy(init_ee_pose)
+                ee_pose["left"][:3, 3] = compute_offset(time.time() - start_time, time_per_edge, edge_len) + init_ee_pose["left"][:3, 3]
 
                 # Update poses with admittance control
                 _update_ee_poses_with_admittance(

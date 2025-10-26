@@ -52,7 +52,7 @@ def unfold_robot() -> None:
                 {
                     "torso": bot.torso.get_predefined_pose(torso_pose),
                 },
-                wait_time=10.0,
+                wait_time=20.0,
                 exit_on_reach=True,
             )
 
@@ -74,7 +74,7 @@ def unfold_robot() -> None:
                     "left_arm": left_arm_pose,
                     "right_arm": right_arm_pose,
                 },
-                wait_time=6.0,
+                wait_time=20.0,
                 exit_on_reach=True,
             )
 
@@ -166,7 +166,7 @@ def fold_robot(safe_motion: bool = True) -> None:
                                     "L_shape"
                                 ),
                             },
-                            wait_time=5.0,
+                            wait_time=20.0,
                         )
 
             # Move arms to folded position
@@ -176,7 +176,7 @@ def fold_robot(safe_motion: bool = True) -> None:
                     "left_arm": bot.left_arm.get_predefined_pose(arm_desired_pose),
                     "right_arm": bot.right_arm.get_predefined_pose(arm_desired_pose),
                 },
-                wait_time=6.0,
+                wait_time=20.0,
                 exit_on_reach=True,
             )
 
@@ -193,7 +193,7 @@ def fold_robot(safe_motion: bool = True) -> None:
             {
                 "torso": bot.torso.get_predefined_pose("folded"),
             },
-            wait_time=8.0,
+            wait_time=20.0,
             exit_on_reach=True,
         )
 
