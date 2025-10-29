@@ -504,7 +504,6 @@ def main() -> None:
     MIN_HEIGHT = 0.933
     if base_t_right_eef[2, 3] < MIN_HEIGHT:
         logger.warning(f"Target height {base_t_right_eef[2, 3]:.3f}m is below minimum {MIN_HEIGHT}m. Clamping to minimum.")
-        # base_t_right_eef[2, 3] = MIN_HEIGHT
         ik_controller.move_to_pose(reset_pose, "R")
         
     print("Target Position adjusted: ", base_t_right_eef)
