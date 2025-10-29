@@ -494,7 +494,21 @@ def main() -> None:
     )
     base_t_right_eef[:3, 3] = base_t_corners[0]
     base_t_right_eef[2, 3] += 0.25  # lift up 30cm
-
+    
+    print("Target Position: ", base_t_right_eef)
+    
+    reset_pose = base_t_right_eef.copy()
+    reset_pose[2, 3] = 0.99
+    
+    # Resets height if target height is too low.
+    MIN_HEIGHT = 0.933
+    if base_t_right_eef[2, 3] < MIN_HEIGHT:
+        logger.warning(f"Target height {base_t_right_eef[2, 3]:.3f}m is below minimum {MIN_HEIGHT}m. Clamping to minimum.")
+        # base_t_right_eef[2, 3] = MIN_HEIGHT
+        ik_controller.move_to_pose(reset_pose, "R")
+        
+    print("Target Position adjusted: ", base_t_right_eef)
+    
     ik_controller.move_to_pose(base_t_right_eef, "R")
 
 

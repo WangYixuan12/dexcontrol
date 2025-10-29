@@ -11,9 +11,13 @@ right_arm_pos = np.array([ 0.23443438, -0.29044896,  0.04472581, -2.183742,   -1
 
 with Robot() as bot:
     # left_arm_pos = bot.left_arm.get_predefined_pose("folded")
-    # right_arm_pos = bot.right_arm.get_predefined_pose("folded")
-    torso_pos = bot.torso.get_predefined_pose("folded")
-    bot.torso.set_joint_pos(torso_pos, wait_time=10.0, exit_on_reach=True)
+    # bot.left_arm.set_joint_pos(left_arm_pos, wait_time=10.0, exit_on_reach=True)
+    right_arm_pos = bot.right_arm.get_predefined_pose("L_shape")
+    bot.right_arm.set_joint_pos(right_arm_pos, wait_time=10.0, exit_on_reach=True)
+    right_arm_pos = bot.right_arm.get_predefined_pose("folded")
+    bot.right_arm.set_joint_pos(right_arm_pos, wait_time=10.0, exit_on_reach=True)
+    # torso_pos = bot.torso.get_predefined_pose("folded")
+    # bot.torso.set_joint_pos(torso_pos, wait_time=10.0, exit_on_reach=True)
     # bot.set_joint_pos(
     #     {
     #         "head": head_pos,
