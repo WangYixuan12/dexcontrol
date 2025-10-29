@@ -19,13 +19,13 @@ import threading
 
 import numpy as np
 import pytransform3d.rotations as pr
+from dexcomm.utils import RateLimiter
 from dexmotion.motion_manager import MotionManager
 from dexmotion.utils import robot_utils
 from loguru import logger
 
 from dexcontrol.apps.dualsense_teleop_base import DualSenseTeleopBase
 from dexcontrol.robot import Robot
-from dexcontrol.utils.rate_limiter import RateLimiter
 
 
 def is_running_remote() -> bool:

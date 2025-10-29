@@ -11,11 +11,11 @@ from typing import Dict, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
+from dexcomm.utils import RateLimiter
 from loguru import logger
 from scipy.ndimage import gaussian_filter1d
 
 from dexcontrol.robot import Robot
-from dexcontrol.utils.rate_limiter import RateLimiter
 
 
 def load_trajectory(filepath: Path) -> tuple[Dict[str, np.ndarray], float]:
@@ -144,21 +144,22 @@ def visualize_trajectory(
     time_array = np.arange(num_frames) / hz
 
     # Define colors for different joints
-    colors = plt.cm.tab10(np.linspace(0, 1, 10))
+    colors = plt.get_cmap("tab10")(np.linspace(0, 1, 10))
 
     # Create figures for each part
     for part, positions in trajectory.items():
-        # Create figure with subplots if velocities available
+        # Create figure with two subplots always; hide velocity axis if not used
         if velocities and part in velocities:
             fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))
             fig.suptitle(
                 f"{part.upper()} - Trajectory Commands", fontsize=18, fontweight="bold"
             )
         else:
-            fig, ax1 = plt.subplots(1, 1, figsize=(14, 8))
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))
             fig.suptitle(
                 f"{part.upper()} - Position Commands", fontsize=18, fontweight="bold"
             )
+            ax2.axis("off")
 
         # Plot positions
         num_joints = positions.shape[1]
@@ -248,6 +249,114 @@ def visualize_trajectory(
     plt.show()
 
 
+def check_goal_difference(diff: Dict[str, np.ndarray], max_goal_diff: float) -> bool:
+    """Check maximum absolute joint difference and compare with threshold.
+
+    Args:
+        diff: Mapping from part name to per-joint delta array (frame - current).
+        max_goal_diff: Maximum allowed absolute joint delta in radians.
+
+    Returns:
+        True if all absolute joint deltas are within the allowed threshold.
+        False if any joint delta exceeds the threshold (also logs details).
+    """
+    max_diff_part: Optional[str] = None
+    max_joint_idx: int = -1
+    max_diff: float = 0.0
+
+    for part, delta in diff.items():
+        abs_delta = np.abs(delta)
+        part_max_idx = int(np.argmax(abs_delta))
+        part_max_val = float(abs_delta[part_max_idx])
+        if part_max_val > max_diff:
+            max_diff = part_max_val
+            max_diff_part = part
+            max_joint_idx = part_max_idx
+    if max_diff > max_goal_diff:
+        logger.warning(
+            f"Max |diff| between current and target position: {max_diff:.3f} rad in {max_diff_part} joint {max_joint_idx}"
+        )
+        logger.warning(
+            f"This is greater than the allowed goal difference of {max_goal_diff:.3f} rad"
+        )
+        logger.warning("Exiting...")
+        return False
+
+    return True
+
+
+def run_replay_loop(
+    robot: Robot,
+    trajectory: Dict[str, np.ndarray],
+    velocities: Optional[Dict[str, np.ndarray]],
+    hz: float,
+    num_frames: int,
+    rate_limiter: RateLimiter,
+    max_goal_diff: Optional[float] = None,
+) -> bool:
+    """Run the main trajectory replay loop.
+
+    Args:
+        robot: Robot instance used to send commands.
+        trajectory: Mapping from part name to per-frame joint positions.
+        velocities: Optional mapping from part name to per-frame joint velocities.
+        hz: Control frequency in Hz.
+        num_frames: Number of frames to replay.
+        rate_limiter: Rate limiter to maintain control frequency.
+        max_goal_diff: Maximum allowed absolute joint delta in radians.
+
+    Returns:
+        True if the trajectory was executed successfully, False otherwise.
+    """
+    # Move to start position
+    start_pos = {part: pos[0] for part, pos in trajectory.items()}
+    robot.set_joint_pos(start_pos, wait_time=3.0, exit_on_reach=True)
+    is_success = True
+    try:
+        start_time = time.time()
+        for i in range(num_frames):
+            # Prepare frame data
+            frame_pos = {part: pos[i] for part, pos in trajectory.items()}
+            if max_goal_diff is not None:
+                current_pos = {
+                    part: getattr(robot, part).get_joint_pos()
+                    for part in trajectory.keys()
+                }
+                # get the difference between the current position and the frame position
+                diff = {
+                    part: frame_pos[part] - current_pos[part]
+                    for part in trajectory.keys()
+                }
+                # enforce goal difference threshold
+                if not check_goal_difference(diff, max_goal_diff):
+                    is_success = False
+                    break
+
+            if velocities:
+                # Try position+velocity control for each part
+                for part, pos in frame_pos.items():
+                    component = getattr(robot, part)
+                    if velocities and part in velocities:
+                        component.set_joint_pos_vel(pos, velocities[part][i])
+                    else:
+                        component.set_joint_pos(pos)
+            else:
+                # Position-only control
+                robot.set_joint_pos(frame_pos, wait_time=0.0)
+
+            # Progress update every 3 seconds
+            if i % int(hz * 3) == 0:
+                elapsed = time.time() - start_time
+                progress = (i / num_frames) * 100
+                logger.info(f"Progress: {progress:.0f}% - Time: {elapsed:.1f}s")
+
+            rate_limiter.sleep()
+
+    except KeyboardInterrupt:
+        logger.info("Interrupted")
+    return is_success
+
+
 def replay_trajectory(
     filepath: Path,
     control_hz: Optional[float] = None,
@@ -256,6 +365,7 @@ def replay_trajectory(
     velocity_sigma: float = 1.0,
     speed_factor: float = 1.0,
     visualize: bool = False,
+    max_goal_diff: float = 0.7,
 ):
     """Main replay function."""
     # Load trajectory
@@ -335,37 +445,16 @@ def replay_trajectory(
     #     robot.right_hand.close_hand()
 
     input("Press Enter to start the replay...")
-    # Move to start position
-    start_pos = {part: pos[0] for part, pos in trajectory.items()}
-    robot.set_joint_pos(start_pos, wait_time=3.0, exit_on_reach=True)
-
     # Replay
-    try:
-        start_time = time.time()
-
-        for i in range(num_frames):
-            # Prepare frame data
-            frame_pos = {part: pos[i] for part, pos in trajectory.items()}
-
-            if use_velocity and velocities:
-                # Try position+velocity control for each part
-                for part, pos in frame_pos.items():
-                    component = getattr(robot, part)
-                    component.set_joint_pos_vel(pos, velocities[part][i])
-            else:
-                # Position-only control
-                robot.set_joint_pos(frame_pos, wait_time=0.0)
-
-            # Progress update every 2 seconds
-            if i % int(hz * 2) == 0:
-                elapsed = time.time() - start_time
-                progress = (i / num_frames) * 100
-                logger.info(f"Progress: {progress:.0f}% - Time: {elapsed:.1f}s")
-
-            rate_limiter.sleep()
-
-    except KeyboardInterrupt:
-        logger.info("Interrupted")
+    run_replay_loop(
+        robot=robot,
+        trajectory=trajectory,
+        velocities=velocities if use_velocity else None,
+        hz=hz,
+        num_frames=num_frames,
+        rate_limiter=rate_limiter,
+        max_goal_diff=max_goal_diff,
+    )
 
     logger.info("Done")
     robot.shutdown()
@@ -403,6 +492,12 @@ def main():
     parser.add_argument(
         "--visualize", action="store_true", help="Visualize trajectory before execution"
     )
+    parser.add_argument(
+        "--max-goal-diff",
+        type=float,
+        default=1.0,
+        help="Maximum goal difference in radians (default: 1.0)",
+    )
 
     args = parser.parse_args()
     logger.warning(
@@ -436,6 +531,7 @@ def main():
         velocity_sigma=args.vel_smooth,
         speed_factor=speed,
         visualize=args.visualize,
+        max_goal_diff=args.max_goal_diff,
     )
 
 

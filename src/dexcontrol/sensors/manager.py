@@ -8,7 +8,7 @@
 # 2. Commercial License
 #    For commercial licensing terms, contact: contact@dexmate.ai
 
-"""Sensor manager for managing robot sensors with Zenoh communication.
+"""Sensor manager for managing robot sensors.
 
 This module provides the Sensors class that manages multiple sensor instances
 based on configuration and provides unified access to them.
@@ -19,7 +19,6 @@ import traceback
 from typing import TYPE_CHECKING, Any
 
 import hydra.utils as hydra_utils
-import zenoh
 from loguru import logger
 from omegaconf import DictConfig, OmegaConf
 
@@ -44,7 +43,6 @@ class Sensors:
 
     Attributes:
         _sensors: List of instantiated sensor objects.
-        _zenoh_session: Active Zenoh session for communication.
     """
 
     if TYPE_CHECKING:
@@ -61,16 +59,13 @@ class Sensors:
         lidar: RPLidarSensor
         ultrasonic: UltrasonicSensor
 
-    def __init__(self, configs: DictConfig | VegaSensorsConfig,
-                 zenoh_session: zenoh.Session) -> None:
+    def __init__(self, configs: DictConfig | VegaSensorsConfig) -> None:
         """Initialize sensors from configuration.
 
         Args:
             configs: Configuration for all sensors (VegaSensorsConfig or DictConfig).
-            zenoh_session: Active Zenoh session for communication.
         """
         self._sensors: list[Any] = []
-        self._zenoh_session = zenoh_session
 
         dict_configs = (OmegaConf.structured(configs) if isinstance(configs, VegaSensorsConfig)
                        else configs)
@@ -108,10 +103,8 @@ class Sensors:
                 'configs': {k: v for k, v in config.items() if k != '_target_'}
             })
 
-            sensor = hydra_utils.instantiate(
-                temp_config,
-                zenoh_session=self._zenoh_session,
-            )
+            # Note: zenoh_session no longer needed as DexComm handles sessions
+            sensor = hydra_utils.instantiate(temp_config)
 
             if hasattr(sensor, "start"):
                 sensor.start()

@@ -8,82 +8,101 @@
 # 2. Commercial License
 #    For commercial licensing terms, contact: contact@dexmate.ai
 
-"""RGB camera sensor implementation using RTC or Zenoh subscriber."""
+"""RGB camera sensor implementation using RTC or DexComm subscriber."""
 
-import logging
-from typing import Optional, Union
+from typing import Optional
 
 import numpy as np
-import zenoh
+from loguru import logger
 
+from dexcontrol.comm import create_camera_subscriber, create_rtc_camera_subscriber
 from dexcontrol.config.sensors.cameras import RGBCameraConfig
-from dexcontrol.utils.rtc_utils import create_rtc_subscriber_with_config
-from dexcontrol.utils.subscribers.camera import RGBCameraSubscriber
-from dexcontrol.utils.subscribers.rtc import RTCSubscriber
-
-logger = logging.getLogger(__name__)
+from dexcontrol.sensors.camera.base_camera import BaseCameraSensor
 
 
-class RGBCameraSensor:
-    """RGB camera sensor that supports both RTC and standard Zenoh subscribers.
+class RGBCameraSensor(BaseCameraSensor):
+    """RGB camera sensor that supports both RTC and standard DexComm subscribers.
 
     This sensor provides RGB image data from a camera. It can be configured to use
     either a high-performance RTC subscriber for real-time video streams or a
-    standard Zenoh subscriber for raw image topics. The mode is controlled by the
+    standard DexComm subscriber for raw image topics. The mode is controlled by the
     `use_rtc` flag in the `RGBCameraConfig`.
+
+    Both subscriber types provide the same API, making them interchangeable.
     """
 
     def __init__(
         self,
         configs: RGBCameraConfig,
-        zenoh_session: zenoh.Session,
     ) -> None:
         """Initialize the RGB camera sensor based on the provided configuration.
 
         Args:
             configs: Configuration object for the RGB camera sensor.
-            zenoh_session: Active Zenoh session for communication.
         """
-        self._name = configs.name
-        self._subscriber: Optional[Union[RTCSubscriber, RGBCameraSubscriber]] = None
+        super().__init__(configs.name)
+        self._configs = configs
+        self._subscriber = None  # Will be either RTCSubscriberWrapper or DexComm Subscriber
 
         subscriber_config = configs.subscriber_config.get("rgb", {})
         if not subscriber_config or not subscriber_config.get("enable", False):
             logger.info(f"RGBCameraSensor '{self._name}' is disabled in config.")
             return
 
-        try:
-            if configs.use_rtc:
-                logger.info(f"'{self._name}': Using RTC subscriber.")
-                self._subscriber = create_rtc_subscriber_with_config(
-                    zenoh_session=zenoh_session,
-                    config=subscriber_config,
-                    name=f"{self._name}_subscriber",
-                    enable_fps_tracking=configs.enable_fps_tracking,
-                    fps_log_interval=configs.fps_log_interval,
+        # Determine info endpoint and query camera info to potentially get RTC URLs
+        subscriber_config = configs.subscriber_config.get("rgb", {})
+        info_endpoint = self._determine_info_endpoint(subscriber_config)
+        self._query_camera_info(info_endpoint)
+
+        if configs.use_rtc:
+            logger.info(f"'{self._name}': Using RTC subscriber.")
+
+            # Try to get signaling URL from camera_info first
+            rtc_url = self._get_rtc_signaling_url("rgb")
+            if rtc_url:
+                logger.info(f"'{self._name}': Creating RTC subscriber with direct URL.")
+                self._subscriber = create_rtc_camera_subscriber(
+                    signaling_url=rtc_url,
                 )
             else:
-                logger.info(f"'{self._name}': Using standard Zenoh subscriber.")
-                topic = subscriber_config.get("topic")
-                if topic:
-                    self._subscriber = RGBCameraSubscriber(
-                        topic=topic,
-                        zenoh_session=zenoh_session,
-                        name=f"{self._name}_subscriber",
-                        enable_fps_tracking=configs.enable_fps_tracking,
-                        fps_log_interval=configs.fps_log_interval,
+                # Fallback to using info_key
+                info_topic = subscriber_config.get("info_key") or subscriber_config.get("topic")
+                if info_topic:
+                    logger.info(f"'{self._name}': Creating RTC subscriber with info_key.")
+                    self._subscriber = create_rtc_camera_subscriber(
+                        info_topic=info_topic,
                     )
                 else:
-                    logger.warning(
-                        f"No 'topic' specified for '{self._name}' in non-RTC mode."
-                    )
+                    logger.warning(f"No RTC URL or info_key for '{self._name}' RTC mode.")
+        else:
+            logger.info(f"'{self._name}': Using standard subscriber.")
+            topic = subscriber_config.get("topic")
+            if topic:
+                self._subscriber = create_camera_subscriber(
+                    topic=topic,
+                )
+            else:
+                logger.warning(
+                    f"No 'topic' specified for '{self._name}' in non-RTC mode."
+                )
 
-            if self._subscriber is None:
-                logger.warning(f"Failed to create subscriber for '{self._name}'.")
+        if self._subscriber is None:
+            logger.warning(f"Failed to create subscriber for '{self._name}'.")
 
-        except Exception as e:
-            logger.error(f"Error creating subscriber for '{self._name}': {e}")
-            self._subscriber = None
+    def _determine_info_endpoint(self, subscriber_config: dict) -> Optional[str]:
+        """Determine the info endpoint for querying camera metadata.
+
+        Args:
+            subscriber_config: Subscriber configuration dict
+
+        Returns:
+            Info endpoint or None
+        """
+        if self._configs.use_rtc:
+            return subscriber_config.get("info_key")
+        else:
+            topic = subscriber_config.get("topic")
+            return self._derive_info_endpoint_from_topic(topic) if topic else None
 
     def shutdown(self) -> None:
         """Shutdown the camera sensor and release all resources."""
@@ -97,7 +116,8 @@ class RGBCameraSensor:
         Returns:
             True if the subscriber exists and is receiving data, False otherwise.
         """
-        return self._subscriber.is_active() if self._subscriber else False
+        data = self._subscriber.get_latest()
+        return data is not None
 
     def wait_for_active(self, timeout: float = 5.0) -> bool:
         """Wait for the camera sensor to start receiving data.
@@ -111,7 +131,8 @@ class RGBCameraSensor:
         if not self._subscriber:
             logger.warning(f"'{self._name}': Cannot wait, no subscriber initialized.")
             return False
-        return self._subscriber.wait_for_active(timeout)
+        msg = self._subscriber.wait_for_message(timeout)
+        return msg is not None
 
     def get_obs(self) -> np.ndarray | None:
         """Get the latest observation (RGB image) from the sensor.
@@ -119,25 +140,8 @@ class RGBCameraSensor:
         Returns:
             The latest RGB image as a numpy array (HxWxC) if available, otherwise None.
         """
-        return self._subscriber.get_latest_data() if self._subscriber else None
-
-    @property
-    def fps(self) -> float:
-        """Get the current FPS measurement.
-
-        Returns:
-            Current frames per second measurement.
-        """
-        return self._subscriber.fps if self._subscriber else 0.0
-
-    @property
-    def name(self) -> str:
-        """Get the sensor name.
-
-        Returns:
-            Sensor name string.
-        """
-        return self._name
+        data = self._subscriber.get_latest()
+        return data if data is not None else None
 
     @property
     def height(self) -> int:
