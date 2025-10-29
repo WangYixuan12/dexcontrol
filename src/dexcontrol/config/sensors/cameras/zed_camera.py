@@ -39,12 +39,12 @@ class ZedCameraConfig:
         default_factory=lambda: {
             "left_rgb": {
                 "enable": True,
-                "info_key": "camera/head/left_rgb/info",
+                "info_key": "camera/head/info",  # Query the main camera info endpoint
                 "topic": "camera/head/left_rgb",
             },
             "right_rgb": {
                 "enable": True,
-                "info_key": "camera/head/right_rgb/info",
+                "info_key": "camera/head/info",  # Query the main camera info endpoint
                 "topic": "camera/head/right_rgb",
             },
             "depth": {

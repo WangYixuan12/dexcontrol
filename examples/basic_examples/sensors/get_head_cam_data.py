@@ -15,6 +15,27 @@ from the robot and display them live using matplotlib animation. It showcases th
 simple API for getting camera data and provides live visualization.
 """
 
+import os
+
+# Fix Qt plugin issue by setting environment variables
+os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = ""
+
+# Set matplotlib backend before importing pyplot
+import matplotlib
+
+try:
+    # Try TkAgg backend first (more reliable for live display)
+    matplotlib.use("TkAgg")
+    print("Using TkAgg backend for display")
+except ImportError:
+    try:
+        # Fallback to Qt5Agg
+        matplotlib.use("Qt5Agg")
+        print("Using Qt5Agg backend for display")
+    except ImportError:
+        # Last resort - use default
+        print("Using default matplotlib backend")
+
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 import numpy as np
@@ -87,19 +108,26 @@ def visualize_camera_data(robot, fps: float = 30.0):
         for i, key in enumerate(["left_rgb", "right_rgb", "depth"]):
             if key in camera_data and camera_data[key] is not None:
                 data = camera_data[key]
-                timestamp = None
 
-                if isinstance(data, tuple):
-                    img = data[0]  # Extract image from tuple
-                    timestamp = data[1]
+                # Extract image and timestamp if present
+                if isinstance(data, dict):
+                    img = data.get("data")
+                    timestamp_ns = data.get("timestamp", None)
+                    # Convert nanoseconds to milliseconds for display
+                    timestamp_ms = timestamp_ns / 1e6 if timestamp_ns else None
                 else:
                     img = data
+                    timestamp_ms = None
 
-                # Update title with timestamp if available
-                if timestamp is not None:
-                    axes[i].set_title(f"{titles[i]}\n{img.shape}\n{timestamp} (ns)")
-                else:
-                    axes[i].set_title(f"{titles[i]}\n{img.shape}")
+                # Skip if no image data
+                if img is None:
+                    continue
+
+                # Update title with shape and timestamp info
+                title = f"{titles[i]}\n{img.shape}"
+                if timestamp_ms is not None:
+                    title += f"\nt={timestamp_ms:.1f}ms"
+                axes[i].set_title(title)
 
                 # Process depth image for visualization
                 if "depth" in key:
@@ -113,20 +141,31 @@ def visualize_camera_data(robot, fps: float = 30.0):
                 displays[i].set_array(img)
 
     # Start animation
-    _ = animation.FuncAnimation(fig, update, interval=int(1000 / fps), blit=False)
+    _ = animation.FuncAnimation(
+        fig, update, interval=int(1000 / fps), blit=False, cache_frame_data=False
+    )
     plt.show()
 
 
-def main(fps: float = 30.0) -> None:
+def main(fps: float = 30.0, use_rtc: bool = False) -> None:
     """Main function to initialize robot and display camera feeds.
 
     Args:
         fps: Display refresh rate in Hz (default: 30.0)
+        use_rtc: Use WebRTC for RGB streams if True (default: False)
     """
     configs = get_vega_config()
     configs.sensors.head_camera.enable = True
+    configs.sensors.head_camera.use_rtc = use_rtc
 
     with Robot(configs=configs) as robot:
+        # Wait for camera to become active
+        print("Waiting for camera streams to become active...")
+        if robot.sensors.head_camera.wait_for_active(timeout=5.0):
+            print("Camera streams active!")
+        else:
+            print("Warning: Some camera streams may not be active")
+
         # Print camera information nicely
         camera_info = robot.sensors.head_camera.camera_info
         print_camera_info(camera_info)

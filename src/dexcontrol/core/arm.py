@@ -15,18 +15,20 @@ communication and the ArmWrenchSensor class for reading wrench sensor data.
 """
 
 import time
-from typing import Any, Final, Literal
+from typing import Any, Literal
 
 import numpy as np
-import zenoh
+from dexcomm import Publisher, call_service
+from dexcomm.serialization import serialize_protobuf
+from dexcomm.utils import RateLimiter
 from jaxtyping import Float
 from loguru import logger
 
 from dexcontrol.config.core.arm import ArmConfig
 from dexcontrol.core.component import RobotComponent, RobotJointComponent
 from dexcontrol.proto import dexcontrol_msg_pb2, dexcontrol_query_pb2
+from dexcontrol.utils.comm_helper import get_zenoh_config_path
 from dexcontrol.utils.os_utils import resolve_key_name
-from dexcontrol.utils.rate_limiter import RateLimiter
 from dexcontrol.utils.trajectory_utils import generate_linear_trajectory
 
 
@@ -44,19 +46,16 @@ class Arm(RobotJointComponent):
     def __init__(
         self,
         configs: ArmConfig,
-        zenoh_session: zenoh.Session,
     ) -> None:
         """Initialize the arm controller.
 
         Args:
             configs: Configuration parameters for the arm including communication topics.
-            zenoh_session: Active Zenoh communication session for message passing.
         """
         super().__init__(
             state_sub_topic=configs.state_sub_topic,
             control_pub_topic=configs.control_pub_topic,
             state_message_type=dexcontrol_msg_pb2.MotorStateWithCurrent,
-            zenoh_session=zenoh_session,
             joint_name=configs.joint_name,
             joint_limit=configs.joint_limit
             if hasattr(configs, "joint_limit")
@@ -67,22 +66,20 @@ class Arm(RobotJointComponent):
             pose_pool=configs.pose_pool,
         )
 
-        self.mode_querier: Final[zenoh.Querier] = zenoh_session.declare_querier(
-            resolve_key_name(configs.set_mode_query), timeout=2.0
-        )
+        # Note: Mode querier functionality will need to be updated to use DexComm
+        # For now, we'll store the query topic for later use
+        self._mode_query_topic = resolve_key_name(configs.set_mode_query)
 
         # Initialize wrench sensor if configured
         self.wrench_sensor: ArmWrenchSensor | None = None
         if configs.wrench_sub_topic:
-            self.wrench_sensor = ArmWrenchSensor(
-                configs.wrench_sub_topic, zenoh_session
-            )
+            self.wrench_sensor = ArmWrenchSensor(configs.wrench_sub_topic)
 
-        # Initialize end effector pass through publisher
-        self._ee_pass_through_publisher: Final[zenoh.Publisher] = (
-            zenoh_session.declare_publisher(
-                resolve_key_name(configs.ee_pass_through_pub_topic)
-            )
+        # Initialize end effector pass through publisher using DexComm
+        self._ee_pass_through_publisher = Publisher(
+            topic=resolve_key_name(configs.ee_pass_through_pub_topic),
+            serializer=serialize_protobuf,
+            config=get_zenoh_config_path(),
         )
 
         self._default_control_hz = configs.default_control_hz
@@ -137,7 +134,17 @@ class Arm(RobotJointComponent):
 
         converted_modes = [mode_map[mode] for mode in modes]
         query_msg = dexcontrol_query_pb2.SetArmMode(modes=converted_modes)
-        self.mode_querier.get(payload=query_msg.SerializeToString())
+        # Use DexComm's call_service for mode setting
+        from dexcontrol.utils.comm_helper import get_zenoh_config_path
+
+        call_service(
+            self._mode_query_topic,
+            request=query_msg,
+            timeout=3.0,
+            config=get_zenoh_config_path(),
+            request_serializer=lambda x: x.SerializeToString(),
+            response_deserializer=None,
+        )
 
     def _send_position_command(self, joint_pos: np.ndarray) -> None:
         """Send joint position command.
@@ -318,8 +325,8 @@ class Arm(RobotJointComponent):
         """Cleans up all Zenoh resources."""
         super().shutdown()
         try:
-            if hasattr(self, "mode_querier") and self.mode_querier:
-                self.mode_querier.undeclare()
+            # Mode querier cleanup no longer needed with DexComm
+            pass
         except Exception as e:
             # Don't log "Undeclared querier" errors as warnings - they're expected during shutdown
             error_msg = str(e).lower()
@@ -338,8 +345,7 @@ class Arm(RobotJointComponent):
             message: The message to send to the robot arm.
         """
         control_msg = dexcontrol_msg_pb2.EndEffectorPassThroughCommand(data=message)
-        control_data = control_msg.SerializeToString()
-        self._ee_pass_through_publisher.put(control_data)
+        self._ee_pass_through_publisher.publish(control_msg)
 
 
 class ArmWrenchSensor(RobotComponent):
@@ -348,16 +354,14 @@ class ArmWrenchSensor(RobotComponent):
     This class provides methods to read wrench sensor data through Zenoh communication.
     """
 
-    def __init__(self, state_sub_topic: str, zenoh_session: zenoh.Session) -> None:
+    def __init__(self, state_sub_topic: str) -> None:
         """Initialize the wrench sensor reader.
 
         Args:
             state_sub_topic: Topic to subscribe to for wrench sensor data.
-            zenoh_session: Active Zenoh communication session for message passing.
         """
         super().__init__(
             state_sub_topic=state_sub_topic,
-            zenoh_session=zenoh_session,
             state_message_type=dexcontrol_msg_pb2.WrenchState,
         )
 

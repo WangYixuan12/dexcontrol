@@ -20,6 +20,7 @@ import time
 
 import numpy as np
 import tyro
+from dexcomm.utils import RateLimiter
 from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
@@ -28,7 +29,6 @@ from rich.table import Table
 
 from dexcontrol.config.vega import get_vega_config
 from dexcontrol.robot import Robot
-from dexcontrol.utils.rate_limiter import RateLimiter
 
 
 def get_imu_data(robot):
@@ -42,8 +42,13 @@ def get_imu_data(robot):
     Returns:
         tuple: (head_imu_data, base_imu_data)
     """
-    head_imu_data = robot.sensors.head_imu.get_obs()
-    base_imu_data = robot.sensors.base_imu.get_obs()
+    # Get all IMU data including magnetometer if available
+    head_imu_data = robot.sensors.head_imu.get_obs(
+        obs_keys=["acc", "gyro", "quat", "mag"]
+    )
+    base_imu_data = robot.sensors.base_imu.get_obs(
+        obs_keys=["acc", "gyro", "quat", "mag"]
+    )
     return head_imu_data, base_imu_data
 
 
@@ -57,26 +62,40 @@ def create_imu_table(imu_data, title):
     table.add_column("W", style="green")
 
     if imu_data is not None:
+        # Define display names and units for each parameter
+        param_info = {
+            "acc": ("Acceleration (m/s²)", 3),
+            "gyro": ("Angular Vel (rad/s)", 3),
+            "quat": ("Orientation (quat)", 4),
+            "mag": ("Magnetometer (µT)", 3),
+            "ang_vel": ("Angular Vel (rad/s)", 3),  # Backward compat
+        }
+
         for key, value in imu_data.items():
-            if isinstance(value, np.ndarray):
+            if key == "timestamp_ns":
+                # Display timestamp in seconds
+                table.add_row("Timestamp (s)", f"{value / 1e9:.3f}", "-", "-", "-")
+            elif isinstance(value, np.ndarray):
+                display_name = param_info.get(key, (key, len(value)))[0]
                 if len(value) == 3:
                     table.add_row(
-                        key,
+                        display_name,
                         f"{value[0]:.4f}",
                         f"{value[1]:.4f}",
                         f"{value[2]:.4f}",
                         "-",
                     )
                 elif len(value) == 4:
+                    # Quaternion [w, x, y, z] format
                     table.add_row(
-                        key,
-                        f"{value[0]:.4f}",
-                        f"{value[1]:.4f}",
-                        f"{value[2]:.4f}",
-                        f"{value[3]:.4f}",
+                        display_name,
+                        f"{value[1]:.4f}",  # x
+                        f"{value[2]:.4f}",  # y
+                        f"{value[3]:.4f}",  # z
+                        f"{value[0]:.4f}",  # w
                     )
                 else:
-                    table.add_row(key, str(value), "-", "-", "-")
+                    table.add_row(display_name, str(value), "-", "-", "-")
             else:
                 table.add_row(key, str(value), "-", "-", "-")
     else:
@@ -164,6 +183,22 @@ def main(fps: float = 100.0):
     configs.sensors.base_imu.enable = True
 
     with Robot(configs=configs) as robot:
+        # Wait for IMU sensors to become active
+        print("Waiting for IMU sensors to become active...")
+        head_active = robot.sensors.head_imu.wait_for_active(timeout=5.0)
+        base_active = robot.sensors.base_imu.wait_for_active(timeout=5.0)
+
+        if not head_active:
+            print("Warning: Head IMU not active")
+        if not base_active:
+            print("Warning: Base IMU not active")
+
+        # Check if magnetometer is available
+        if head_active and robot.sensors.head_imu.has_mag():
+            print("Head IMU has magnetometer data available")
+        if base_active and robot.sensors.base_imu.has_mag():
+            print("Base IMU has magnetometer data available")
+
         display_live_imu_data(robot, fps)
 
 

@@ -35,23 +35,32 @@ LIB_PATH: Final[Path] = Path(__file__).resolve().parent
 CFG_PATH: Final[Path] = LIB_PATH / "config"
 MIN_SOC_SOFTWARE_VERSION: int = 286
 
-logger.configure(handlers=[{"sink": RichHandler(markup=True), "format": "{message}"}])
+logger.configure(
+    handlers=[
+        {"sink": RichHandler(markup=True), "format": "{message}", "level": "INFO"}
+    ]
+)
 
 
-def get_comm_cfg_path() -> Path:
+def get_comm_cfg_path() -> Path | None:
     default_path = list(
         Path("~/.dexmate/comm/zenoh/").expanduser().glob("**/zenoh_peer_config.json5")
     )
     if len(default_path) == 0:
-        raise FileNotFoundError(
-            "No zenoh_peer_config.json5 file found in ~/.dexmate/comm/zenoh/"
+        logger.debug(
+            "No zenoh_peer_config.json5 file found in ~/.dexmate/comm/zenoh/ - will use DexComm defaults"
         )
+        return None
     return default_path[0]
 
 
-COMM_CFG_PATH: Final[Path] = Path(
-    os.getenv(COMM_CFG_PATH_ENV_VAR, get_comm_cfg_path())
-).expanduser()
+# Try to get comm config path, but allow None
+_comm_cfg = os.getenv(COMM_CFG_PATH_ENV_VAR)
+if _comm_cfg:
+    COMM_CFG_PATH: Final[Path] = Path(_comm_cfg).expanduser()
+else:
+    _default = get_comm_cfg_path()
+    COMM_CFG_PATH: Final[Path] = _default if _default else Path("/tmp/no_config")
 
 ROBOT_CFG_PATH: Final[Path] = CFG_PATH
 

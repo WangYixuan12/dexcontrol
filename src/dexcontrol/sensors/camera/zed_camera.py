@@ -8,71 +8,50 @@
 # 2. Commercial License
 #    For commercial licensing terms, contact: contact@dexmate.ai
 
-"""ZED camera sensor implementation using RTC subscribers for RGB and Zenoh subscriber for depth."""
+"""ZED camera sensor implementation using RTC or DexComm subscribers for RGB and depth."""
 
-import logging
 import time
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional
 
 import numpy as np
-import zenoh
+from loguru import logger
 
-from dexcontrol.config.sensors.cameras import ZedCameraConfig
-from dexcontrol.utils.os_utils import resolve_key_name
-from dexcontrol.utils.rtc_utils import create_rtc_subscriber_from_zenoh
-from dexcontrol.utils.subscribers.camera import (
-    DepthCameraSubscriber,
-    RGBCameraSubscriber,
+from dexcontrol.comm import (
+    create_camera_subscriber,
+    create_depth_subscriber,
+    create_rtc_camera_subscriber,
 )
-from dexcontrol.utils.subscribers.rtc import RTCSubscriber
-from dexcontrol.utils.zenoh_utils import query_zenoh_json
-
-logger = logging.getLogger(__name__)
-
-# Optional import for depth processing
-try:
-    from dexsensor.serialization.camera import decode_depth
-    DEXSENSOR_AVAILABLE = True
-except ImportError:
-    logger.warning("dexsensor not available. Depth data will be returned without decoding.")
-    decode_depth = None
-    DEXSENSOR_AVAILABLE = False
+from dexcontrol.config.sensors.cameras import ZedCameraConfig
+from dexcontrol.sensors.camera.base_camera import BaseCameraSensor
 
 
-class ZedCameraSensor:
+class ZedCameraSensor(BaseCameraSensor):
     """ZED camera sensor for multi-stream (RGB, Depth) data acquisition.
 
     This sensor manages left RGB, right RGB, and depth data streams from a ZED
     camera. It can be configured to use high-performance RTC subscribers for RGB
-    streams (`use_rtc=True`) or fall back to standard Zenoh subscribers
-    (`use_rtc=False`). The depth stream always uses a standard Zenoh subscriber.
+    streams (`use_rtc=True`) or standard DexComm subscribers. Both types provide
+    the same API interface, making them interchangeable.
     """
-
-    SubscriberType = Union[RTCSubscriber, DepthCameraSubscriber, RGBCameraSubscriber]
 
     def __init__(
         self,
         configs: ZedCameraConfig,
-        zenoh_session: zenoh.Session,
     ) -> None:
         """Initialize the ZED camera sensor and its subscribers.
 
         Args:
             configs: Configuration object for the ZED camera.
-            zenoh_session: Active Zenoh session for communication.
         """
-        self._name = configs.name
-        self._zenoh_session = zenoh_session
+        super().__init__(configs.name)
         self._configs = configs
-        self._subscribers: Dict[str, Optional[ZedCameraSensor.SubscriberType]] = {}
-        self._camera_info: Optional[Dict[str, Any]] = None
+        self._subscribers: Dict[str, Optional[Any]] = {}  # Will hold either RTCSubscriberWrapper or Subscriber
 
         self._create_subscribers()
-        self._query_camera_info()
 
     def _create_subscriber(
         self, stream_name: str, stream_config: Dict[str, Any]
-    ) -> Optional[SubscriberType]:
+    ) -> Optional[Any]:
         """Factory method to create a subscriber based on stream type and config."""
         try:
             if not stream_config.get("enable", False):
@@ -85,41 +64,40 @@ class ZedCameraSensor:
                 if not topic:
                     logger.warning(f"'{self._name}': No 'topic' for depth stream.")
                     return None
-                logger.info(f"'{self._name}': Creating Zenoh depth subscriber.")
-                return DepthCameraSubscriber(
+                logger.info(f"'{self._name}': Creating depth subscriber.")
+                # Use new DexComm integration
+                return create_depth_subscriber(
                     topic=topic,
-                    zenoh_session=self._zenoh_session,
-                    name=f"{self._name}_{stream_name}_subscriber",
-                    enable_fps_tracking=self._configs.enable_fps_tracking,
-                    fps_log_interval=self._configs.fps_log_interval,
                 )
 
-            # Create RGB subscriber (RTC or Zenoh)
+            # Create RGB subscriber (RTC or DexComm)
             if self._configs.use_rtc:
-                info_key = stream_config.get("info_key")
-                if not info_key:
-                    logger.warning(f"'{self._name}': No 'info_key' for RTC stream '{stream_name}'.")
-                    return None
-                logger.info(f"'{self._name}': Creating RTC subscriber for '{stream_name}'.")
-                return create_rtc_subscriber_from_zenoh(
-                    zenoh_session=self._zenoh_session,
-                    info_topic=info_key,
-                    name=f"{self._name}_{stream_name}_subscriber",
-                    enable_fps_tracking=self._configs.enable_fps_tracking,
-                    fps_log_interval=self._configs.fps_log_interval,
-                )
+                # Check if we have RTC info from camera_info
+                rtc_url = self._get_rtc_signaling_url(stream_name)
+                if rtc_url:
+                    logger.info(f"'{self._name}': Creating RTC subscriber for '{stream_name}' with direct URL.")
+                    return create_rtc_camera_subscriber(
+                        signaling_url=rtc_url,
+                    )
+                else:
+                    # Fallback to querying via info_key
+                    info_key = stream_config.get("info_key")
+                    if not info_key:
+                        logger.warning(f"'{self._name}': No RTC URL or info_key for stream '{stream_name}'.")
+                        return None
+                    logger.info(f"'{self._name}': Creating RTC subscriber for '{stream_name}' with info_key.")
+                    return create_rtc_camera_subscriber(
+                        info_topic=info_key,
+                    )
             else:
                 topic = stream_config.get("topic")
                 if not topic:
                     logger.warning(f"'{self._name}': No 'topic' for Zenoh stream '{stream_name}'.")
                     return None
-                logger.info(f"'{self._name}': Creating Zenoh RGB subscriber for '{stream_name}'.")
-                return RGBCameraSubscriber(
+                logger.info(f"'{self._name}': Creating RGB subscriber for '{stream_name}'.")
+                # Use new DexComm integration
+                return create_camera_subscriber(
                     topic=topic,
-                    zenoh_session=self._zenoh_session,
-                    name=f"{self._name}_{stream_name}_subscriber",
-                    enable_fps_tracking=self._configs.enable_fps_tracking,
-                    fps_log_interval=self._configs.fps_log_interval,
                 )
 
         except Exception as e:
@@ -129,6 +107,13 @@ class ZedCameraSensor:
     def _create_subscribers(self) -> None:
         """Create subscribers for all configured camera streams."""
         subscriber_config = self._configs.subscriber_config
+
+        # Determine info endpoint for camera metadata
+        info_endpoint = self._determine_info_endpoint(subscriber_config)
+
+        # Query camera info first to potentially get RTC URLs
+        self._query_camera_info(info_endpoint)
+
         stream_definitions = {
             "left_rgb": subscriber_config.get("left_rgb", {}),
             "right_rgb": subscriber_config.get("right_rgb", {}),
@@ -138,42 +123,28 @@ class ZedCameraSensor:
         for name, config in stream_definitions.items():
             self._subscribers[name] = self._create_subscriber(name, config)
 
-    def _query_camera_info(self) -> None:
-        """Query Zenoh for camera metadata if using RTC."""
+    def _determine_info_endpoint(self, subscriber_config: dict) -> Optional[str]:
+        """Determine the info endpoint for querying camera metadata.
 
-        enabled_rgb_streams = [
-            s
-            for s_name, s in self._subscribers.items()
-            if "rgb" in s_name and s is not None
-        ]
+        Args:
+            subscriber_config: Subscriber configuration dict
 
-        if not enabled_rgb_streams:
-            logger.warning(f"'{self._name}': No enabled RGB streams to query for camera info.")
-            return
-
-        # Use the info_key from the first available RGB subscriber's config
-        first_stream_name = "left_rgb" if self._subscribers.get("left_rgb") else "right_rgb"
-        stream_config = self._configs.subscriber_config.get(first_stream_name, {})
-        info_key = stream_config.get("info_key")
-
-        if not info_key:
-            logger.warning(f"'{self._name}': Could not find info_key for camera info query.")
-            return
-
-        try:
-            # Construct the root info key (e.g., 'camera/head/info')
-            resolved_key = resolve_key_name(info_key).rstrip("/")
-            info_key_root = "/".join(resolved_key.split("/")[:-2])
-            final_info_key = f"{info_key_root}/info"
-
-            logger.info(f"'{self._name}': Querying for camera info at '{final_info_key}'.")
-            self._camera_info = query_zenoh_json(self._zenoh_session, final_info_key)
-            if self._camera_info:
-                logger.info(f"'{self._name}': Successfully received camera info.")
-            else:
-                logger.warning(f"'{self._name}': No camera info found at '{final_info_key}'.")
-        except Exception as e:
-            logger.error(f"'{self._name}': Failed to query camera info: {e}")
+        Returns:
+            Info endpoint or None
+        """
+        # Try to find the first enabled RGB stream to get the base info endpoint
+        for stream_name in ["left_rgb", "right_rgb"]:
+            stream_config = subscriber_config.get(stream_name, {})
+            if stream_config.get("enable", False):
+                if self._configs.use_rtc:
+                    info_key = stream_config.get("info_key")
+                    if info_key:
+                        return info_key
+                else:
+                    topic = stream_config.get("topic")
+                    if topic:
+                        return self._derive_info_endpoint_from_topic(topic)
+        return None
 
     def shutdown(self) -> None:
         """Shutdown all active subscribers for the camera sensor."""
@@ -196,7 +167,7 @@ class ZedCameraSensor:
             True if at least one subscriber is active, False otherwise.
         """
         return any(
-            sub.is_active() for sub in self._subscribers.values() if sub is not None
+            sub.get_latest() is not None for sub in self._subscribers.values() if sub is not None
         )
 
     def is_stream_active(self, stream_name: str) -> bool:
@@ -209,7 +180,7 @@ class ZedCameraSensor:
             True if the specified stream's subscriber is active, False otherwise.
         """
         subscriber = self._subscribers.get(stream_name)
-        return subscriber.is_active() if subscriber else False
+        return subscriber.get_latest() is not None if subscriber else False
 
     def wait_for_active(self, timeout: float = 5.0, require_all: bool = False) -> bool:
         """Wait for camera streams to become active.
@@ -229,7 +200,7 @@ class ZedCameraSensor:
 
         if require_all:
             for sub in enabled_subscribers:
-                if not sub.wait_for_active(timeout):
+                if not sub.wait_for_message(timeout):
                     logger.warning(f"'{self._name}': Timed out waiting for subscriber '{sub.name}'.")
                     return False
             logger.info(f"'{self._name}': All enabled streams are active.")
@@ -267,16 +238,26 @@ class ZedCameraSensor:
         obs_out = {}
         for key in keys_to_fetch:
             subscriber = self._subscribers.get(key)
-            data = subscriber.get_latest_data() if subscriber else None
+            data = subscriber.get_latest() if subscriber else None
 
-            is_tuple_or_list = isinstance(data, (tuple, list))
+            # DexComm returns dict with 'data' and 'timestamp' keys when timestamp is present
+            has_timestamp = isinstance(data, dict) and 'timestamp' in data
 
             if include_timestamp:
-                if not is_tuple_or_list:
-                    logger.warning(f"Timestamp is not available yet for {key} stream.")
-                obs_out[key] = data
+                # Always return a consistent structure
+                if has_timestamp:
+                    obs_out[key] = {
+                        'data': data.get('data') if isinstance(data, dict) else None,
+                        'timestamp': data.get('timestamp') if isinstance(data, dict) else None,
+                    }
+                else:
+                    obs_out[key] = {'data': data, 'timestamp': None}
             else:
-                obs_out[key] = data[0] if is_tuple_or_list else data
+                if has_timestamp:
+                    # Extract payload when timestamp wrapper is present
+                    obs_out[key] = data.get('data') if isinstance(data, dict) else None
+                else:
+                    obs_out[key] = data
         return obs_out
 
     def get_left_rgb(self) -> Optional[np.ndarray]:
@@ -286,7 +267,7 @@ class ZedCameraSensor:
             The latest left RGB image as a numpy array, or None if not available.
         """
         subscriber = self._subscribers.get("left_rgb")
-        return subscriber.get_latest_data() if subscriber else None
+        return subscriber.get_latest() if subscriber else None
 
     def get_right_rgb(self) -> Optional[np.ndarray]:
         """Get the latest image from the right RGB stream.
@@ -295,7 +276,7 @@ class ZedCameraSensor:
             The latest right RGB image as a numpy array, or None if not available.
         """
         subscriber = self._subscribers.get("right_rgb")
-        return subscriber.get_latest_data() if subscriber else None
+        return subscriber.get_latest() if subscriber else None
 
     def get_depth(self) -> Optional[np.ndarray]:
         """Get the latest image from the depth stream.
@@ -306,29 +287,8 @@ class ZedCameraSensor:
             The latest depth image as a numpy array, or None if not available.
         """
         subscriber = self._subscribers.get("depth")
-        return subscriber.get_latest_data() if subscriber else None
+        return subscriber.get_latest() if subscriber else None
 
-    @property
-    def fps(self) -> Dict[str, float]:
-        """Get the current FPS measurement for each active stream.
-
-        Returns:
-            A dictionary mapping stream names to their FPS measurements.
-        """
-        return {
-            name: sub.fps
-            for name, sub in self._subscribers.items()
-            if sub is not None
-        }
-
-    @property
-    def name(self) -> str:
-        """Get the sensor name.
-
-        Returns:
-            Sensor name string.
-        """
-        return self._name
 
     @property
     def available_streams(self) -> list:
@@ -346,25 +306,7 @@ class ZedCameraSensor:
         Returns:
             List of stream names that are currently receiving data.
         """
-        return [name for name, sub in self._subscribers.items() if sub and sub.is_active()]
-
-    @property
-    def dexsensor_available(self) -> bool:
-        """Check if dexsensor is available for depth decoding.
-
-        Returns:
-            True if dexsensor is available, False otherwise.
-        """
-        return DEXSENSOR_AVAILABLE
-
-    @property
-    def camera_info(self) -> dict | None:
-        """Get the camera info.
-
-        Returns:
-            Camera info dictionary if available, None otherwise.
-        """
-        return self._camera_info
+        return [name for name, sub in self._subscribers.items() if sub and sub.get_latest() is not None]
 
     @property
     def height(self) -> dict[str, int]:

@@ -8,21 +8,21 @@
 # 2. Commercial License
 #    For commercial licensing terms, contact: contact@dexmate.ai
 
-"""Ultrasonic sensor implementations using Zenoh subscribers.
+"""Ultrasonic sensor implementations using DexComm subscribers.
 
-This module provides ultrasonic sensor classes that use the generic
-subscriber for distance measurements.
+This module provides ultrasonic sensor classes that use DexComm's
+Raw API for distance measurements.
 """
 
 import numpy as np
-import zenoh
+from dexcomm.serialization import deserialize_protobuf
 
+from dexcontrol.comm import create_subscriber
 from dexcontrol.proto import dexcontrol_msg_pb2
-from dexcontrol.utils.subscribers import ProtobufZenohSubscriber
 
 
 class UltrasonicSensor:
-    """Ultrasonic sensor using Zenoh subscriber.
+    """Ultrasonic sensor using DexComm subscriber.
 
     This sensor provides distance measurements from ultrasonic sensors
     """
@@ -30,24 +30,18 @@ class UltrasonicSensor:
     def __init__(
         self,
         configs,
-        zenoh_session: zenoh.Session,
     ) -> None:
         """Initialize the ultrasonic sensor.
 
         Args:
             configs: Configuration for the ultrasonic sensor.
-            zenoh_session: Active Zenoh session for communication.
         """
         self._name = configs.name
 
-        # Create the generic subscriber with JSON decoder
-        self._subscriber = ProtobufZenohSubscriber(
+        # Create the protobuf subscriber using our clean DexComm integration
+        self._subscriber = create_subscriber(
             topic=configs.topic,
-            zenoh_session=zenoh_session,
-            message_type=dexcontrol_msg_pb2.UltrasonicState,
-            name=f"{self._name}_subscriber",
-            enable_fps_tracking=configs.enable_fps_tracking,
-            fps_log_interval=configs.fps_log_interval,
+            deserializer=lambda data: deserialize_protobuf(data, dexcontrol_msg_pb2.UltrasonicState),
         )
 
 
@@ -61,7 +55,8 @@ class UltrasonicSensor:
         Returns:
             True if receiving data, False otherwise.
         """
-        return self._subscriber.is_active()
+        data = self._subscriber.get_latest()
+        return data is not None
 
     def wait_for_active(self, timeout: float = 5.0) -> bool:
         """Wait for the ultrasonic sensor to start receiving data.
@@ -72,7 +67,8 @@ class UltrasonicSensor:
         Returns:
             True if sensor becomes active, False if timeout is reached.
         """
-        return self._subscriber.wait_for_active(timeout)
+        msg = self._subscriber.wait_for_message(timeout)
+        return msg is not None
 
     def get_obs(self) -> np.ndarray | None:
         """Get observation data for the ultrasonic sensor.
@@ -84,7 +80,7 @@ class UltrasonicSensor:
             Numpy array of distances in meters with shape (4,) in the order:
             [front_left, front_right, back_left, back_right].
         """
-        data = self._subscriber.get_latest_data()
+        data = self._subscriber.get_latest()
         if data is not None:
             obs = [
                 data.front_left,
@@ -95,15 +91,6 @@ class UltrasonicSensor:
             return np.array(obs, dtype=np.float32)
 
         return None
-
-    @property
-    def fps(self) -> float:
-        """Get the current FPS measurement.
-
-        Returns:
-            Current frames per second measurement.
-        """
-        return self._subscriber.fps
 
     @property
     def name(self) -> str:

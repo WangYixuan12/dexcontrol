@@ -8,30 +8,32 @@
 # 2. Commercial License
 #    For commercial licensing terms, contact: contact@dexmate.ai
 
-"""Zenoh query utilities for robot communication.
+"""Query utilities for robot communication using DexComm.
 
-This module provides the ZenohQueryable class that encapsulates all zenoh-based
-queries and communication with the robot server. It handles various query types
-including hand type detection, version information, status queries, and control operations.
+This module provides the RobotQueryInterface class that encapsulates all communication
+queries with the robot server using DexComm's service pattern. It handles various query
+types including hand type detection, version information, status queries, and control
+operations.
 """
 
 import json
 import time
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-import zenoh
+# Use DexComm for all communication
+from dexcomm import call_service
 from loguru import logger
 
 from dexcontrol.config.vega import VegaConfig, get_vega_config
 from dexcontrol.core.hand import HandType
 from dexcontrol.proto import dexcontrol_query_pb2
+from dexcontrol.utils.comm_helper import get_zenoh_config_path
 from dexcontrol.utils.os_utils import resolve_key_name
 from dexcontrol.utils.pb_utils import (
     ComponentStatus,
     status_to_dict,
 )
 from dexcontrol.utils.viz_utils import show_component_status
-from dexcontrol.utils.zenoh_utils import compute_ntp_stats, create_zenoh_session
 
 if TYPE_CHECKING:
     from dexcontrol.config.vega import VegaConfig
@@ -49,63 +51,47 @@ class RobotQueryInterface:
         ...     version_info = interface.get_version_info()
     """
 
-    def __init__(self, zenoh_session: zenoh.Session, configs: "VegaConfig"):
-        """Initialize the RobotQueryInterface with session and config.
+    def __init__(self, configs: "VegaConfig"):
+        """Initialize the RobotQueryInterface.
 
         Args:
-            zenoh_session: Active zenoh session for communication.
             configs: Robot configuration containing query names.
         """
-        self._zenoh_session: zenoh.Session = zenoh_session
+        # Session parameter kept for compatibility but not used
         self._configs = configs
         self._owns_session = False
 
     @classmethod
-    def create(
-        cls,
-        zenoh_config_file: str | None = None,
-    ) -> "RobotQueryInterface":
-        """Create a standalone RobotQueryInterface with its own zenoh session.
+    def create(cls) -> "RobotQueryInterface":
+        """Create a standalone RobotQueryInterface.
 
         This class method provides a convenient way to create a RobotQueryInterface
-        without requiring the full Robot class. The created interface will manage
-        its own zenoh session and configuration.
-
-        Args:
-            zenoh_config_file: Path to zenoh configuration file. If None,
-                              uses the default configuration path.
-            robot_config_path: Path to robot configuration file. If None,
-                              uses default configuration for detected robot model.
+        without requiring the full Robot class. DexComm handles all session
+        management internally.
 
         Returns:
             RobotQueryInterface instance ready for use.
 
-        Raises:
-            RuntimeError: If zenoh session initialization fails.
-            ValueError: If robot configuration cannot be loaded.
-
         Example:
-            >>> query_interface = RobotQueryInterface.create_standalone()
+            >>> query_interface = RobotQueryInterface.create()
             >>> version_info = query_interface.get_version_info()
             >>> query_interface.close()
         """
-
-        session = create_zenoh_session(zenoh_config_file)
+        # DexComm handles session internally, we just need config
         config: VegaConfig = get_vega_config()
-
-        instance = cls(session, config)
+        instance = cls(config)
         instance._owns_session = True
         return instance
 
     def close(self) -> None:
-        """Close the zenoh session if owned by this instance.
+        """Close the communication session if owned by this instance.
 
         This method should be called when done using a standalone
         RobotQueryInterface to properly clean up resources.
         """
-        if self._owns_session and self._zenoh_session:
-            logger.debug("Closing zenoh session")
-            self._zenoh_session.close()
+        if self._owns_session:
+            # DexComm cleanup is handled automatically
+            logger.debug("DexComm session cleanup handled automatically")
 
     def __enter__(self) -> "RobotQueryInterface":
         """Enter context manager."""
@@ -128,37 +114,42 @@ class RobotQueryInterface:
             RuntimeError: If hand type information cannot be retrieved.
         """
         try:
-            # Sleep more time to avoice zenoh query timeout
-            time.sleep(2)
-            replies = self._zenoh_session.get(
-                resolve_key_name(self._configs.hand_info_query_name), timeout=5.0
+            # Query hand type using DexComm service
+            full_topic = resolve_key_name(self._configs.hand_info_query_name)
+
+            response = call_service(
+                full_topic,
+                timeout=5.0,
+                config=get_zenoh_config_path(),
+                request_serializer=None,
+                response_deserializer=None,
             )
 
-            for reply in replies:
-                if reply.ok and reply.ok.payload:
-                    # Parse JSON response (not protobuf)
-                    payload_bytes = reply.ok.payload.to_bytes()
-                    payload_str = payload_bytes.decode("utf-8")
-                    hand_info = json.loads(payload_str)
+            if response:
+                # Parse JSON response directly
+                if isinstance(response, bytes):
+                    payload_str = response.decode("utf-8")
+                else:
+                    payload_str = response
 
-                    # Validate the expected format
-                    if isinstance(hand_info, dict):
-                        logger.info(f"End effector hand types: {hand_info}")
-                        return {
-                            "left": HandType(hand_info["left"]),
-                            "right": HandType(hand_info["right"]),
-                        }
-                    else:
-                        logger.warning(
-                            f"Invalid hand type format received: {hand_info}"
-                        )
+                hand_info = json.loads(payload_str)
+
+                # Validate the expected format
+                if isinstance(hand_info, dict):
+                    logger.info(f"End effector hand types: {hand_info}")
+                    return {
+                        "left": HandType(hand_info["left"]),
+                        "right": HandType(hand_info["right"]),
+                    }
+                else:
+                    logger.warning(f"Invalid hand type format received: {hand_info}")
 
             # If no valid response received, assume v1 for backward compatibility
-            return {"left": HandType.HandF5D6_V1, "right": HandType.HandF5D6_V1}
+            return {"left": HandType.UNKNOWN, "right": HandType.UNKNOWN}
 
         except Exception as e:
-            logger.warning(f"Failed to query hand type: {e}. Assuming v1 hand types.")
-            return {"left": HandType.HandF5D6_V1, "right": HandType.HandF5D6_V1}
+            logger.warning(f"Failed to query hand type: {e}. V1 hand type unknown.")
+            return {"left": HandType.UNKNOWN, "right": HandType.UNKNOWN}
 
     def query_ntp(
         self,
@@ -189,23 +180,29 @@ class RobotQueryInterface:
         time_offset = []
         time_rtt = []
 
-        querier = self._zenoh_session.declare_querier(ntp_key, timeout=timeout)
-        time.sleep(0.1)
-
         reply_count = 0
         for i in range(sample_count):
             request = dexcontrol_query_pb2.NTPRequest()
             request.client_send_time_ns = time.time_ns()
             request.sample_count = sample_count
             request.sample_index = i
-            replies = querier.get(payload=request.SerializeToString())
 
-            for reply in replies:
-                reply_count += 1
-                if reply.ok and reply.ok.payload:
+            # Use call_service for NTP query
+            try:
+                response_data = call_service(
+                    ntp_key,
+                    request=request,
+                    timeout=timeout,
+                    config=get_zenoh_config_path(),
+                    request_serializer=lambda x: x.SerializeToString(),
+                    response_deserializer=None,
+                )
+
+                if response_data:
+                    reply_count += 1
                     client_receive_time_ns = time.time_ns()
                     response = dexcontrol_query_pb2.NTPResponse()
-                    response.ParseFromString(reply.ok.payload.to_bytes())
+                    response.ParseFromString(response_data)
                     t0 = request.client_send_time_ns
                     t1 = response.server_receive_time_ns
                     t2 = response.server_send_time_ns
@@ -214,16 +211,25 @@ class RobotQueryInterface:
                     rtt = (t3 - t0) / 1e9
                     time_offset.append(offset)
                     time_rtt.append(rtt)
+            except Exception as e:
+                logger.debug(f"NTP query {i} failed: {e}")
+
             if i < sample_count - 1:
                 time.sleep(0.01)
-
-        querier.undeclare()
         if reply_count == 0:
-            return {"success": False, "offset": 0, "rtt": 0}
+            return {"success": False, "offset": 0.0, "rtt": 0.0}
 
-        stats = compute_ntp_stats(time_offset, time_rtt)
-        offset = stats["offset (mean)"]
-        rtt = stats["round_trip_time (mean)"]
+        # Compute simple NTP statistics
+        import numpy as np
+
+        stats = {
+            "offset (mean)": float(np.mean(time_offset)) if time_offset else 0.0,
+            "round_trip_time (mean)": float(np.mean(time_rtt)) if time_rtt else 0.0,
+            "offset (std)": float(np.std(time_offset)) if time_offset else 0.0,
+            "round_trip_time (std)": float(np.std(time_rtt)) if time_rtt else 0.0,
+        }
+        offset = float(stats["offset (mean)"])
+        rtt = float(stats["round_trip_time (mean)"])
         if show:
             from dexcontrol.utils.viz_utils import show_ntp_stats
 
@@ -263,34 +269,38 @@ class RobotQueryInterface:
             RuntimeError: If version information cannot be retrieved.
         """
         try:
-            replies = self._zenoh_session.get(
-                resolve_key_name(self._configs.version_info_name), timeout=5.0
+            response = call_service(
+                resolve_key_name(self._configs.version_info_name),
+                timeout=5.0,
+                config=get_zenoh_config_path(),
+                request_serializer=None,
+                response_deserializer=None,
             )
 
-            for reply in replies:
-                if reply.ok and reply.ok.payload:
-                    try:
-                        # Parse JSON response
-                        payload_bytes = reply.ok.payload.to_bytes()
-                        payload_str = payload_bytes.decode("utf-8")
-                        version_info = json.loads(payload_str)
+            if response:
+                try:
+                    # Parse JSON response directly
+                    if isinstance(response, bytes):
+                        payload_str = response.decode("utf-8")
+                    else:
+                        payload_str = response
+                    version_info = json.loads(payload_str)
 
-                        # Validate expected structure
-                        if (
-                            isinstance(version_info, dict)
-                            and "server" in version_info
-                            and "client" in version_info
-                        ):
-                            if show:
-                                self._show_version_info(version_info)
-                            return version_info
-                        else:
-                            logger.warning(
-                                f"Invalid version info format received: {version_info}"
-                            )
-                    except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                        logger.warning(f"Failed to parse version info response: {e}")
-                        continue
+                    # Validate expected structure
+                    if (
+                        isinstance(version_info, dict)
+                        and "server" in version_info
+                        and "client" in version_info
+                    ):
+                        if show:
+                            self._show_version_info(version_info)
+                        return version_info
+                    else:
+                        logger.warning(
+                            f"Invalid version info format received: {version_info}"
+                        )
+                except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                    logger.warning(f"Failed to parse version info response: {e}")
 
             raise RuntimeError("No valid version information received from server")
 
@@ -312,19 +322,22 @@ class RobotQueryInterface:
             RuntimeError: If status information cannot be retrieved.
         """
         try:
-            replies = self._zenoh_session.get(
-                resolve_key_name(self._configs.status_info_name)
+            response = call_service(
+                resolve_key_name(self._configs.status_info_name),
+                timeout=2.0,
+                config=get_zenoh_config_path(),
+                request_serializer=None,
+                response_deserializer=None,
             )
+
             status_dict = {}
-            for reply in replies:
-                if reply.ok and reply.ok.payload:
-                    status_bytes = reply.ok.payload.to_bytes()
-                    status_msg = cast(
-                        dexcontrol_query_pb2.ComponentStates,
-                        dexcontrol_query_pb2.ComponentStates.FromString(status_bytes),
-                    )
-                    status_dict = status_to_dict(status_msg)
-                    break
+            if response:
+                # Parse protobuf response directly
+                status_msg = cast(
+                    dexcontrol_query_pb2.ComponentStates,
+                    dexcontrol_query_pb2.ComponentStates.FromString(response),
+                )
+                status_dict = status_to_dict(status_msg)
 
             if show:
                 show_component_status(status_dict)
@@ -358,9 +371,14 @@ class RobotQueryInterface:
             query_msg = dexcontrol_query_pb2.RebootComponent(
                 component=component_map[part]
             )
-            self._zenoh_session.get(
+
+            call_service(
                 resolve_key_name(self._configs.reboot_query_name),
-                payload=query_msg.SerializeToString(),
+                request=query_msg,
+                timeout=2.0,
+                config=get_zenoh_config_path(),
+                request_serializer=lambda x: x.SerializeToString(),
+                response_deserializer=None,
             )
             logger.info(f"Rebooting component: {part}")
         except Exception as e:
@@ -391,11 +409,16 @@ class RobotQueryInterface:
 
         try:
             query_msg = dexcontrol_query_pb2.ClearError(component=component_map[part])
-            self._zenoh_session.get(
+
+            call_service(
                 resolve_key_name(self._configs.clear_error_query_name),
-                handler=lambda reply: logger.info(f"Cleared error of {part}"),
-                payload=query_msg.SerializeToString(),
+                request=query_msg,
+                timeout=2.0,
+                config=get_zenoh_config_path(),
+                request_serializer=lambda x: x.SerializeToString(),
+                response_deserializer=None,
             )
+            logger.info(f"Cleared error of {part}")
         except Exception as e:
             raise RuntimeError(
                 f"Failed to clear error for component {part}: {e}"

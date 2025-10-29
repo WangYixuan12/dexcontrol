@@ -20,7 +20,7 @@ import threading
 import time
 from typing import Any, TypeVar, cast
 
-import zenoh
+from dexcomm import Subscriber, call_service
 from google.protobuf.message import Message
 from loguru import logger
 from rich.console import Console
@@ -29,9 +29,8 @@ from rich.table import Table
 from dexcontrol.config.core import BatteryConfig, EStopConfig, HeartbeatConfig
 from dexcontrol.core.component import RobotComponent
 from dexcontrol.proto import dexcontrol_msg_pb2, dexcontrol_query_pb2
-from dexcontrol.utils.constants import DISABLE_HEARTBEAT_ENV_VAR
+from dexcontrol.utils.comm_helper import get_zenoh_config_path
 from dexcontrol.utils.os_utils import resolve_key_name
-from dexcontrol.utils.subscribers.generic import GenericZenohSubscriber
 
 # Type variable for Message subclasses
 M = TypeVar("M", bound=Message)
@@ -50,16 +49,13 @@ class Battery(RobotComponent):
         _shutdown_event: Event to signal thread shutdown.
     """
 
-    def __init__(self, configs: BatteryConfig, zenoh_session: zenoh.Session) -> None:
+    def __init__(self, configs: BatteryConfig) -> None:
         """Initialize the Battery component.
 
         Args:
             configs: Battery configuration containing subscription topics.
-            zenoh_session: Active Zenoh session for communication.
         """
-        super().__init__(
-            configs.state_sub_topic, zenoh_session, dexcontrol_msg_pb2.BMSState
-        )
+        super().__init__(configs.state_sub_topic, dexcontrol_msg_pb2.BMSState)
         self._console = Console()
         self._shutdown_event = threading.Event()
         self._monitor_thread = threading.Thread(
@@ -219,18 +215,14 @@ class EStop(RobotComponent):
     def __init__(
         self,
         configs: EStopConfig,
-        zenoh_session: zenoh.Session,
     ) -> None:
         """Initialize the EStop component.
 
         Args:
             configs: EStop configuration containing subscription topics.
-            zenoh_session: Active Zenoh session for communication.
         """
         self._enabled = configs.enabled
-        super().__init__(
-            configs.state_sub_topic, zenoh_session, dexcontrol_msg_pb2.EStopState
-        )
+        super().__init__(configs.state_sub_topic, dexcontrol_msg_pb2.EStopState)
         self._estop_query_name = configs.estop_query_name
         if not self._enabled:
             logger.warning("EStop monitoring is DISABLED via configuration")
@@ -267,11 +259,15 @@ class EStop(RobotComponent):
             enable: If True, activates the software E-Stop. If False, deactivates it.
         """
         query_msg = dexcontrol_query_pb2.SetEstop(enable=enable)
-        self._zenoh_session.get(
+        call_service(
             resolve_key_name(self._estop_query_name),
-            handler=lambda reply: logger.info(f"Set E-Stop to {enable}"),
-            payload=query_msg.SerializeToString(),
+            request=query_msg,
+            timeout=0.05,
+            config=get_zenoh_config_path(),
+            request_serializer=lambda x: x.SerializeToString(),
+            response_deserializer=None,
         )
+        logger.info(f"Set E-Stop to {enable}")
 
     def get_status(self) -> dict[str, bool]:
         """Gets the current EStop state information.
@@ -380,34 +376,44 @@ class Heartbeat:
     def __init__(
         self,
         configs: HeartbeatConfig,
-        zenoh_session: zenoh.Session,
     ) -> None:
         """Initialize the Heartbeat monitor.
 
         Args:
             configs: Heartbeat configuration containing topic and timeout settings.
-            zenoh_session: Active Zenoh session for communication.
         """
         self._timeout_seconds = configs.timeout_seconds
         self._enabled = configs.enabled
         self._paused = False
         self._paused_lock = threading.Lock()
         self._shutdown_event = threading.Event()
-        if not self._enabled:
-            logger.info("Heartbeat monitoring is DISABLED via configuration")
-            # Create a dummy subscriber that's never active
-            self._subscriber = None
-            self._monitor_thread = None
-            return
 
-        # Create a generic subscriber for the heartbeat topic
-        self._subscriber = GenericZenohSubscriber(
-            topic=configs.heartbeat_topic,
-            zenoh_session=zenoh_session,
-            decoder=self._decode_heartbeat,
-            name="heartbeat_monitor",
-            enable_fps_tracking=False,
+        # Always create the subscriber to monitor heartbeat, regardless of enabled state
+        def heartbeat_callback(data):
+            """Process heartbeat data and update internal state."""
+            try:
+                decoded_data = self._decode_heartbeat(data)
+                # Store the decoded heartbeat data for monitoring
+                self._latest_heartbeat_data = decoded_data
+                self._last_heartbeat_time = time.time()
+            except Exception as e:
+                logger.debug(f"Failed to process heartbeat data: {e}")
+
+        # Define a simple deserializer that just returns the raw data
+        def heartbeat_deserializer(data: bytes) -> bytes:
+            """Pass through deserializer for raw heartbeat data."""
+            return data
+
+        self._subscriber = Subscriber(
+            topic=resolve_key_name(configs.heartbeat_topic),
+            callback=heartbeat_callback,
+            deserializer=heartbeat_deserializer,
+            config=get_zenoh_config_path(),
         )
+
+        # Initialize tracking variables
+        self._latest_heartbeat_data = None
+        self._last_heartbeat_time = None
 
         # Start monitoring thread
         self._monitor_thread = threading.Thread(
@@ -415,64 +421,103 @@ class Heartbeat:
         )
         self._monitor_thread.start()
 
-        logger.info(f"Heartbeat monitor started with {self._timeout_seconds}s timeout")
+        if not self._enabled:
+            logger.info(
+                "Heartbeat monitoring is DISABLED - will monitor but not exit on timeout"
+            )
+        else:
+            logger.info(
+                f"Heartbeat monitor started with {self._timeout_seconds}s timeout"
+            )
 
-    def _decode_heartbeat(self, data: zenoh.ZBytes) -> float:
+    def _decode_heartbeat(self, data) -> float:
         """Decode heartbeat data from raw bytes.
 
         Args:
-            data: Raw Zenoh bytes containing heartbeat value.
+            data: Raw bytes containing heartbeat value.
 
         Returns:
             Decoded heartbeat timestamp value in seconds.
         """
-        # Decode UTF-8 string and convert to float
-        # Publisher sends: str(self.timecount_now).encode() in milliseconds
-        timestamp_str = data.to_bytes().decode("utf-8")
-        timestamp_ms = float(timestamp_str)
-        # Convert from milliseconds to seconds
-        return timestamp_ms / 1000.0
+        try:
+            # Handle different data formats
+            if isinstance(data, bytes):
+                timestamp_str = data.decode("utf-8")
+            elif isinstance(data, str):
+                timestamp_str = data
+            else:
+                # If it's something else, try to convert to string
+                timestamp_str = str(data)
+
+            # Parse the timestamp (expected to be in milliseconds)
+            timestamp_ms = float(timestamp_str)
+            # Convert from milliseconds to seconds
+            return timestamp_ms / 1000.0
+        except (ValueError, AttributeError, UnicodeDecodeError) as e:
+            logger.debug(
+                f"Failed to decode heartbeat data: {e}, data type: {type(data)}"
+            )
+            raise
+
+    def _is_subscriber_active(self) -> bool:
+        """Check if the subscriber is active (has received data)."""
+        return self._last_heartbeat_time is not None
+
+    def _get_time_since_last_data(self) -> float | None:
+        """Get time since last heartbeat data was received."""
+        if self._last_heartbeat_time is None:
+            return None
+        return time.time() - self._last_heartbeat_time
+
+    def _get_latest_heartbeat_data(self) -> float | None:
+        """Get the latest heartbeat data."""
+        return self._latest_heartbeat_data
 
     def _heartbeat_monitor(self) -> None:
         """Background thread that continuously monitors heartbeat signal."""
-        if not self._enabled or self._subscriber is None:
+        if self._subscriber is None:
             return
 
         while not self._shutdown_event.is_set():
             try:
-                # Skip monitoring if paused
+                # Skip if paused
                 with self._paused_lock:
-                    is_paused = self._paused
-                if is_paused:
-                    self._shutdown_event.wait(0.1)
-                    continue
+                    if self._paused:
+                        self._shutdown_event.wait(0.1)
+                        continue
 
-                # Check if fresh data is being received within the timeout period
-                if self._subscriber.is_active():
-                    if not self._subscriber.is_data_fresh(self._timeout_seconds):
-                        time_since_fresh = self._subscriber.get_time_since_last_data()
-                        if time_since_fresh is not None:
-                            logger.critical(
-                                f"HEARTBEAT TIMEOUT! No fresh heartbeat data received for {time_since_fresh:.2f}s "
-                                f"(timeout: {self._timeout_seconds}s). Low-level controller may have failed. "
-                                "Exiting program immediately for safety."
-                            )
-                        else:
-                            logger.critical(
-                                f"HEARTBEAT TIMEOUT! No heartbeat data ever received "
-                                f"(timeout: {self._timeout_seconds}s). Low-level controller may have failed. "
-                                "Exiting program immediately for safety."
-                            )
-                        # Exit immediately for safety
-                        os._exit(1)
+                # Check timeout
+                time_since_last = self._get_time_since_last_data()
+                if time_since_last and time_since_last > self._timeout_seconds:
+                    self._handle_timeout(time_since_last)
 
                 # Check every 50ms for responsive monitoring
                 self._shutdown_event.wait(0.05)
 
             except Exception as e:
                 logger.error(f"Heartbeat monitor error: {e}")
-                # Continue monitoring even if there's an error
                 self._shutdown_event.wait(0.1)
+
+    def _handle_timeout(self, time_since_last: float) -> None:
+        """Handle heartbeat timeout based on enabled state."""
+        if self._enabled:
+            logger.critical(
+                f"HEARTBEAT TIMEOUT! No fresh heartbeat data received for {time_since_last:.2f}s "
+                f"(timeout: {self._timeout_seconds}s). Low-level controller may have failed. "
+                "Exiting program immediately for safety."
+            )
+            os._exit(1)
+        else:
+            # Log warning only once per timeout period to avoid spam
+            if (
+                not hasattr(self, "_last_warning_time")
+                or time.time() - self._last_warning_time > self._timeout_seconds
+            ):
+                logger.warning(
+                    f"Heartbeat timeout detected ({time_since_last:.2f}s > {self._timeout_seconds}s) "
+                    "but exit is disabled"
+                )
+                self._last_warning_time = time.time()
 
     def pause(self) -> None:
         """Pause heartbeat monitoring temporarily.
@@ -480,38 +525,33 @@ class Heartbeat:
         When paused, the heartbeat monitor will not check for timeouts or exit
         the program. This is useful for scenarios where you need to temporarily
         disable safety monitoring (e.g., during system maintenance or testing).
-
-        Warning: Use with caution as this disables a critical safety mechanism.
         """
-        if not self._enabled:
-            logger.warning("Cannot pause heartbeat monitoring - it's already disabled")
-            return
-
         with self._paused_lock:
+            if self._paused:
+                return
             self._paused = True
-        logger.warning(
-            "Heartbeat monitoring PAUSED - safety mechanism temporarily disabled"
-        )
+
+        if self._enabled:
+            logger.warning(
+                "Heartbeat monitoring PAUSED - safety mechanism temporarily disabled"
+            )
+        else:
+            logger.info("Heartbeat monitoring paused (exit already disabled)")
 
     def resume(self) -> None:
-        """Resume heartbeat monitoring after being paused.
-
-        This re-enables the heartbeat timeout checking that was temporarily
-        disabled by pause(). The monitor will immediately start checking
-        for fresh heartbeat data again.
-        """
-        if not self._enabled:
-            logger.warning("Cannot resume heartbeat monitoring - it's disabled")
-            return
-
+        """Resume heartbeat monitoring after being paused."""
         with self._paused_lock:
             if not self._paused:
-                logger.info("Heartbeat monitoring is already active")
                 return
             self._paused = False
-        # sleep for some time to make sure the heartbeat subscriber is resumed
-        time.sleep(self._timeout_seconds)
-        logger.info("Heartbeat monitoring RESUMED - safety mechanism re-enabled")
+
+        # Wait briefly to allow fresh heartbeat data
+        time.sleep(0.1)
+
+        if self._enabled:
+            logger.info("Heartbeat monitoring RESUMED - safety mechanism re-enabled")
+        else:
+            logger.info("Heartbeat monitoring resumed (exit still disabled)")
 
     def is_paused(self) -> bool:
         """Check if heartbeat monitoring is currently paused.
@@ -534,28 +574,28 @@ class Heartbeat:
                 - enabled: Whether heartbeat monitoring is enabled (bool)
                 - paused: Whether heartbeat monitoring is paused (bool)
         """
-        if not self._enabled or self._subscriber is None:
+        if self._subscriber is None:
             return {
                 "is_active": False,
                 "last_value": None,
                 "time_since_last": None,
                 "timeout_seconds": self._timeout_seconds,
-                "enabled": False,
+                "enabled": self._enabled,
                 "paused": False,
             }
 
-        last_value = self._subscriber.get_latest_data()
-        time_since_last = self._subscriber.get_time_since_last_data()
+        last_value = self._get_latest_heartbeat_data()
+        time_since_last = self._get_time_since_last_data()
 
         with self._paused_lock:
             paused = self._paused
 
         return {
-            "is_active": self._subscriber.is_active(),
+            "is_active": self._is_subscriber_active(),
             "last_value": last_value,
             "time_since_last": time_since_last,
             "timeout_seconds": self._timeout_seconds,
-            "enabled": True,
+            "enabled": self._enabled,
             "paused": paused,
         }
 
@@ -565,9 +605,9 @@ class Heartbeat:
         Returns:
             True if heartbeat is active, False otherwise.
         """
-        if not self._enabled or self._subscriber is None:
+        if self._subscriber is None:
             return False
-        return self._subscriber.is_active()
+        return self._is_subscriber_active()
 
     @staticmethod
     def _format_uptime(seconds: float) -> str:
@@ -617,8 +657,6 @@ class Heartbeat:
 
     def shutdown(self) -> None:
         """Shuts down the heartbeat monitor and stops monitoring thread."""
-        if not self._enabled:
-            return
         self._shutdown_event.set()
         if self._monitor_thread and self._monitor_thread.is_alive():
             self._monitor_thread.join(timeout=2.0)  # Extended timeout
@@ -635,50 +673,45 @@ class Heartbeat:
         table.add_column("Parameter", style="cyan")
         table.add_column("Value")
 
-        # Enabled status
-        enabled = status.get("enabled", True)
-        if not enabled:
-            table.add_row("Status", "[yellow]DISABLED[/]")
-            table.add_row(
-                "Reason", f"[yellow]Disabled via {DISABLE_HEARTBEAT_ENV_VAR}[/]"
-            )
-            console = Console()
-            console.print(table)
-            return
+        # Mode: Enabled/Disabled and Paused state
+        mode_parts = []
+        if not status["enabled"]:
+            mode_parts.append("[yellow]Exit Disabled[/]")
+        if status["paused"]:
+            mode_parts.append("[yellow]Paused[/]")
+        if not mode_parts:
+            mode_parts.append("[green]Active[/]")
+        table.add_row("Mode", " | ".join(mode_parts))
 
-        # Paused status
-        paused = status.get("paused", False)
-        if paused:
-            table.add_row("Status", "[yellow]PAUSED[/]")
-        else:
-            # Active status
-            active_style = "bold dark_green" if status["is_active"] else "bold red"
-            table.add_row("Signal Active", f"[{active_style}]{status['is_active']}[/]")
+        # Signal status
+        active_style = "green" if status["is_active"] else "red"
+        table.add_row(
+            "Signal",
+            f"[{active_style}]{'Receiving' if status['is_active'] else 'No Signal'}[/]",
+        )
 
-        # Last heartbeat value (robot uptime)
-        last_value = status["last_value"]
-        if last_value is not None:
-            uptime_str = self._format_uptime(last_value)
-            table.add_row("Robot Driver Uptime", f"[blue]{uptime_str}[/]")
-        else:
-            table.add_row("Robot Driver Uptime", "[red]No data[/]")
+        # Robot uptime
+        if status["last_value"] is not None:
+            uptime_str = self._format_uptime(status["last_value"])
+            table.add_row("Robot Uptime", f"[blue]{uptime_str}[/]")
 
         # Time since last heartbeat
-        time_since = status["time_since_last"]
-        timeout_seconds = status["timeout_seconds"]
-        if time_since is not None and isinstance(timeout_seconds, (int, float)):
+        if status["time_since_last"] is not None:
+            time_since = status["time_since_last"]
+            timeout = status["timeout_seconds"]
             time_style = (
-                "bold red" if time_since > timeout_seconds * 0.8 else "bold dark_green"
+                "red"
+                if time_since > timeout
+                else "yellow"
+                if time_since > timeout * 0.5
+                else "green"
             )
-            table.add_row("Time Since Last", f"[{time_style}]{time_since:.2f}s[/]")
-        else:
-            table.add_row("Time Since Last", "[yellow]N/A[/]")
+            table.add_row("Last Heartbeat", f"[{time_style}]{time_since:.1f}s ago[/]")
 
         # Timeout setting
-        table.add_row("Timeout", f"[blue]{timeout_seconds}s[/]")
+        table.add_row("Timeout", f"[blue]{status['timeout_seconds']}s[/]")
 
-        console = Console()
-        console.print(table)
+        Console().print(table)
 
 
 class ServerLogSubscriber:
@@ -696,54 +729,33 @@ class ServerLogSubscriber:
         _log_subscriber: Zenoh subscriber for log messages.
     """
 
-    def __init__(self, zenoh_session: zenoh.Session) -> None:
-        """Initialize the ServerLogSubscriber.
-
-        Args:
-            zenoh_session: Active Zenoh session for communication.
-        """
-        self._zenoh_session = zenoh_session
+    def __init__(self) -> None:
+        """Initialize the ServerLogSubscriber."""
+        # DexComm will handle the communication
         self._log_subscriber = None
         self._initialize()
 
     def _initialize(self) -> None:
         """Initialize the log subscriber with error handling."""
 
-        def log_handler(sample):
+        def log_handler(payload):
             """Handle incoming log messages from the server."""
-            if not self._is_valid_log_sample(sample):
-                return
-
             try:
-                log_data = self._parse_log_payload(sample.payload)
+                log_data = self._parse_log_payload(payload)
                 if log_data:
                     self._display_server_log(log_data)
             except Exception as e:
                 logger.warning(f"Failed to process server log: {e}")
 
         try:
-            # Subscribe to server logs topic
-            self._log_subscriber = self._zenoh_session.declare_subscriber(
-                "logs", log_handler
+            # Subscribe to server logs topic using DexComm
+            self._log_subscriber = Subscriber(
+                topic="logs", callback=log_handler, config=get_zenoh_config_path()
             )
             logger.debug("Server log subscriber initialized")
         except Exception as e:
             logger.warning(f"Failed to initialize server log subscriber: {e}")
             self._log_subscriber = None
-
-    def _is_valid_log_sample(self, sample) -> bool:
-        """Check if log sample is valid.
-
-        Args:
-            sample: Zenoh sample to validate.
-
-        Returns:
-            True if sample is valid, False otherwise.
-        """
-        if sample is None or sample.payload is None:
-            logger.debug("Received empty log sample")
-            return False
-        return True
 
     def _parse_log_payload(self, payload) -> dict[str, str] | None:
         """Parse log payload and return structured data.
@@ -755,7 +767,17 @@ class ServerLogSubscriber:
             Parsed log data as dictionary or None if parsing fails.
         """
         try:
-            payload_str = payload.to_bytes().decode("utf-8")
+            if hasattr(payload, "to_bytes"):
+                # Handle zenoh-style payload
+                payload_str = payload.to_bytes().decode("utf-8")
+            else:
+                # Handle raw bytes from DexComm
+                payload_str = (
+                    payload.decode("utf-8")
+                    if isinstance(payload, bytes)
+                    else str(payload)
+                )
+
             if not payload_str.strip():
                 logger.debug("Received empty log payload")
                 return None
@@ -804,7 +826,7 @@ class ServerLogSubscriber:
         """Clean up the log subscriber and release resources."""
         if self._log_subscriber is not None:
             try:
-                self._log_subscriber.undeclare()
+                self._log_subscriber.shutdown()
                 self._log_subscriber = None
             except Exception as e:
                 logger.error(f"Error cleaning up log subscriber: {e}")

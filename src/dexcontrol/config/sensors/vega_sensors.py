@@ -18,7 +18,7 @@ LiDAR and ultrasonic sensors.
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from .cameras import LuxonisCameraConfig, RGBCameraConfig, ZedCameraConfig
+from .cameras import RGBCameraConfig, ZedCameraConfig
 from .imu import ChassisIMUConfig, ZedIMUConfig
 from .lidar import RPLidarConfig
 from .ultrasonic import UltraSonicConfig
@@ -33,15 +33,17 @@ def _make_rgb_camera(name: str) -> Callable[[], RGBCameraConfig]:
     Returns:
         Factory function that creates an RGBCameraConfig
     """
-    return lambda: RGBCameraConfig(
-        subscriber_config=dict(
-            rgb=dict(
-                enable=True,
-                info_key=f"camera/base/{name}/rgb/info",
-                topic=f"camera/base/{name}/rgb",
-            )
-        ),
-        name=f"base_{name}_camera",
+    return (
+        lambda: RGBCameraConfig(
+            subscriber_config=dict(
+                rgb=dict(
+                    enable=True,
+                    info_key=f"camera/base_{name}/info",  # Matches dexsensor: camera/base_{name}/info
+                    topic=f"camera/base_{name}/rgb",
+                )
+            ),
+            name=f"base_{name}_camera",
+        )
     )
 
 
@@ -58,12 +60,6 @@ class VegaSensorsConfig:
     """
 
     head_camera: ZedCameraConfig = field(default_factory=ZedCameraConfig)
-    left_wrist_camera: LuxonisCameraConfig = field(
-        default_factory=lambda: LuxonisCameraConfig(name="left_wrist_camera")
-    )
-    right_wrist_camera: LuxonisCameraConfig = field(
-        default_factory=lambda: LuxonisCameraConfig(name="right_wrist_camera")
-    )
     base_left_camera: RGBCameraConfig = field(default_factory=_make_rgb_camera("left"))
     base_right_camera: RGBCameraConfig = field(
         default_factory=_make_rgb_camera("right")
@@ -79,8 +75,6 @@ class VegaSensorsConfig:
 
     def __post_init__(self) -> None:
         self.head_camera.enable = False
-        self.left_wrist_camera.enable = False
-        self.right_wrist_camera.enable = False
         self.base_left_camera.enable = False
         self.base_right_camera.enable = False
         self.base_front_camera.enable = False

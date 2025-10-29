@@ -23,6 +23,7 @@ import copy
 
 import numpy as np
 import tyro
+from dexcomm.utils import RateLimiter
 from dexmotion.ik import LocalPinkIKSolver
 from dexmotion.motion_manager import MotionManager
 from loguru import logger
@@ -31,7 +32,6 @@ from pytransform3d import transformations as pt
 
 from dexcontrol.core.arm import Arm
 from dexcontrol.robot import Robot
-from dexcontrol.utils.rate_limiter import RateLimiter
 
 
 class AdmittanceController:
