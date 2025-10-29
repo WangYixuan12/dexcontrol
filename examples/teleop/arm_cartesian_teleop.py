@@ -17,9 +17,8 @@ controller to move the end-effectors in Cartesian space with both position and o
 import numpy as np
 import tyro
 from base_arm_teleop import BaseArmTeleopNode, BaseIKController
+from dexcomm.utils import RateLimiter
 from loguru import logger
-
-from dexcontrol.utils.rate_limiter import RateLimiter
 
 
 class CartesianTeleopNode(BaseArmTeleopNode):

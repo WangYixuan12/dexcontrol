@@ -18,8 +18,8 @@ from enum import Enum
 from typing import Any, cast
 
 import numpy as np
-import zenoh
 from jaxtyping import Float
+from loguru import logger
 
 from dexcontrol.config.core.hand import HandConfig
 from dexcontrol.core.component import RobotComponent, RobotJointComponent
@@ -42,7 +42,6 @@ class Hand(RobotJointComponent):
     def __init__(
         self,
         configs: HandConfig,
-        zenoh_session: zenoh.Session,
         hand_type: HandType = HandType.HandF5D6_V1,
     ) -> None:
         """Initialize the hand controller.
@@ -50,13 +49,11 @@ class Hand(RobotJointComponent):
         Args:
             configs: Hand configuration parameters containing communication topics
                 and predefined hand positions.
-            zenoh_session: Active Zenoh communication session for message passing.
         """
         super().__init__(
             state_sub_topic=configs.state_sub_topic,
             control_pub_topic=configs.control_pub_topic,
             state_message_type=dexcontrol_msg_pb2.MotorStateWithCurrent,
-            zenoh_session=zenoh_session,
             joint_name=configs.joint_name,
         )
 
@@ -129,17 +126,14 @@ class HandF5D6(Hand):
     def __init__(
         self,
         configs: HandConfig,
-        zenoh_session: zenoh.Session,
         hand_type: HandType = HandType.HandF5D6_V1,
     ) -> None:
-        super().__init__(configs, zenoh_session)
+        super().__init__(configs)
 
         # Initialize touch sensor for F5D6_V2 hands
         self._hand_type = hand_type
         if self._hand_type == HandType.HandF5D6_V2:
-            self._touch_sensor = HandF5D6TouchSensor(
-                configs.touch_sensor_sub_topic, zenoh_session
-            )
+            self._touch_sensor = HandF5D6TouchSensor(configs.touch_sensor_sub_topic)
         elif self._hand_type == HandType.HandF5D6_V1:
             self._touch_sensor = None
         else:
@@ -164,27 +158,30 @@ class HandF5D6(Hand):
         exit_on_reach_kwargs: dict[str, Any] | None = None,
     ) -> None:
         """Close the hand fully using a two-step approach for better control."""
-        if self.is_joint_pos_reached(self._joint_pos_close, tolerance=0.1):
-            return
+        try:
+            if self.is_joint_pos_reached(self._joint_pos_close, tolerance=0.1):
+                return
 
-        # First step: Move to intermediate position
-        intermediate_pos = self._get_intermediate_close_position()
-        first_step_wait_time = 0.8
-        self.set_joint_pos(
-            intermediate_pos,
-            wait_time=first_step_wait_time,
-            exit_on_reach=exit_on_reach,
-            exit_on_reach_kwargs=exit_on_reach_kwargs,
-        )
+            # First step: Move to intermediate position
+            intermediate_pos = self._get_intermediate_close_position()
+            first_step_wait_time = 0.8
+            self.set_joint_pos(
+                intermediate_pos,
+                wait_time=first_step_wait_time,
+                exit_on_reach=exit_on_reach,
+                exit_on_reach_kwargs=exit_on_reach_kwargs,
+            )
 
-        # Second step: Move to final closed position
-        remaining_wait_time = max(0.0, wait_time - first_step_wait_time)
-        self.set_joint_pos(
-            self._joint_pos_close,
-            wait_time=remaining_wait_time,
-            exit_on_reach=exit_on_reach,
-            exit_on_reach_kwargs=exit_on_reach_kwargs,
-        )
+            # Second step: Move to final closed position
+            remaining_wait_time = max(0.0, wait_time - first_step_wait_time)
+            self.set_joint_pos(
+                self._joint_pos_close,
+                wait_time=remaining_wait_time,
+                exit_on_reach=exit_on_reach,
+                exit_on_reach_kwargs=exit_on_reach_kwargs,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to close hand: {e}")
 
     def open_hand(
         self,
@@ -193,27 +190,30 @@ class HandF5D6(Hand):
         exit_on_reach_kwargs: dict[str, Any] | None = None,
     ) -> None:
         """Open the hand fully using a two-step approach for better control."""
-        if self.is_joint_pos_reached(self._joint_pos_open, tolerance=0.1):
-            return
+        try:
+            if self.is_joint_pos_reached(self._joint_pos_open, tolerance=0.1):
+                return
 
-        # First step: Move to intermediate position
-        intermediate_pos = self._get_intermediate_open_position()
-        first_step_wait_time = 0.3
-        self.set_joint_pos(
-            intermediate_pos,
-            wait_time=first_step_wait_time,
-            exit_on_reach=exit_on_reach,
-            exit_on_reach_kwargs=exit_on_reach_kwargs,
-        )
+            # First step: Move to intermediate position
+            intermediate_pos = self._get_intermediate_open_position()
+            first_step_wait_time = 0.3
+            self.set_joint_pos(
+                intermediate_pos,
+                wait_time=first_step_wait_time,
+                exit_on_reach=exit_on_reach,
+                exit_on_reach_kwargs=exit_on_reach_kwargs,
+            )
 
-        # Second step: Move to final open position
-        remaining_wait_time = max(0.0, wait_time - first_step_wait_time)
-        self.set_joint_pos(
-            self._joint_pos_open,
-            wait_time=remaining_wait_time,
-            exit_on_reach=exit_on_reach,
-            exit_on_reach_kwargs=exit_on_reach_kwargs,
-        )
+            # Second step: Move to final open position
+            remaining_wait_time = max(0.0, wait_time - first_step_wait_time)
+            self.set_joint_pos(
+                self._joint_pos_open,
+                wait_time=remaining_wait_time,
+                exit_on_reach=exit_on_reach,
+                exit_on_reach_kwargs=exit_on_reach_kwargs,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to open hand: {e}")
 
     def _get_intermediate_close_position(self) -> np.ndarray:
         """Get intermediate position for closing hand.
@@ -254,16 +254,14 @@ class HandF5D6TouchSensor(RobotComponent):
     This class provides methods to read wrench sensor data through Zenoh communication.
     """
 
-    def __init__(self, state_sub_topic: str, zenoh_session: zenoh.Session) -> None:
+    def __init__(self, state_sub_topic: str) -> None:
         """Initialize the wrench sensor reader.
 
         Args:
             state_sub_topic: Topic to subscribe to for wrench sensor data.
-            zenoh_session: Active Zenoh communication session for message passing.
         """
         super().__init__(
             state_sub_topic=state_sub_topic,
-            zenoh_session=zenoh_session,
             state_message_type=dexcontrol_msg_pb2.HandTouchSensorState,
         )
 

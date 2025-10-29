@@ -19,11 +19,11 @@ import time
 from abc import ABC, abstractmethod
 from enum import Enum
 
+from dexcomm.utils import RateLimiter
 from dualsense_controller import DualSenseController
 from loguru import logger
 
 from dexcontrol.robot import Robot
-from dexcontrol.utils.rate_limiter import RateLimiter
 
 
 class ControlMode(Enum):

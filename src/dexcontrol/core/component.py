@@ -8,24 +8,27 @@
 # 2. Commercial License
 #    For commercial licensing terms, contact: contact@dexmate.ai
 
-"""Base module for robot components with Zenoh communication.
+"""Base module for robot components using DexComm communication.
 
-This module provides base classes for robot components that communicate via Zenoh.
-It includes RobotComponent for state-only components and RobotJointComponent for
-components that also support control commands.
+This module provides base classes for robot components that use DexComm's
+Raw API for communication. It includes RobotComponent for state-only components
+and RobotJointComponent for components that also support control commands.
 """
 
 import time
-from typing import Any, Final, Mapping, TypeVar
+from typing import Any, Final, Mapping, Optional, TypeVar
 
 import numpy as np
-import zenoh
+
+# Use DexComm for all communication
+from dexcomm import Publisher, Subscriber
+from dexcomm.serialization import deserialize_protobuf, serialize_protobuf
 from google.protobuf.message import Message
 from jaxtyping import Float
 from loguru import logger
 
+from dexcontrol.utils.comm_helper import get_zenoh_config_path
 from dexcontrol.utils.os_utils import resolve_key_name
-from dexcontrol.utils.subscribers import ProtobufZenohSubscriber
 
 # Type variable for Message subclasses
 M = TypeVar("M", bound=Message)
@@ -47,40 +50,54 @@ class RobotComponent:
     def __init__(
         self,
         state_sub_topic: str,
-        zenoh_session: zenoh.Session,
         state_message_type: type[M],
     ) -> None:
         """Initializes RobotComponent.
 
         Args:
             state_sub_topic: Topic to subscribe to for state updates.
-            zenoh_session: Active Zenoh session for communication.
             state_message_type: Protobuf message class for component state.
         """
         self._state_message_type = state_message_type
-        self._zenoh_session: Final[zenoh.Session] = zenoh_session
-        self._init_subscriber(state_sub_topic, state_message_type, zenoh_session)
+        self._latest_state: Optional[M] = None
+        self._is_active = False
+        self._init_subscriber(state_sub_topic, state_message_type)
 
     def _init_subscriber(
         self,
         state_sub_topic: str,
         state_message_type: type[M],
-        zenoh_session: zenoh.Session,
     ) -> None:
-        """Initialize the Zenoh subscriber for state updates.
+        """Initialize the subscriber for state updates using DexComm.
 
         Args:
             state_sub_topic: Topic to subscribe to for state updates.
             state_message_type: Protobuf message class for component state.
-            zenoh_session: Active Zenoh session for communication.
         """
-        self._subscriber = ProtobufZenohSubscriber(
-            topic=state_sub_topic,
-            zenoh_session=zenoh_session,
-            message_type=state_message_type,
-            name=f"{self.__class__.__name__}",
-            enable_fps_tracking=False,
+        # Resolve topic with robot namespace
+        full_topic = resolve_key_name(state_sub_topic)
+
+        # Create DexComm subscriber with protobuf deserialization
+        self._subscriber = Subscriber(
+            topic=full_topic,
+            callback=self._on_state_update,
+            deserializer=lambda data: deserialize_protobuf(data, state_message_type),
+            config=get_zenoh_config_path(),
         )
+
+        logger.debug(
+            f"Created subscriber for {self.__class__.__name__} on {full_topic}"
+        )
+
+    def _on_state_update(self, state: M) -> None:
+        """Handle incoming state updates.
+
+        Args:
+            state: Deserialized protobuf state message.
+        """
+        self._latest_state = state
+        if state:
+            self._is_active = True
 
     def _get_state(self) -> M:
         """Gets the current state of the component.
@@ -91,10 +108,9 @@ class RobotComponent:
         Raises:
             None: If no state data is available.
         """
-        state = self._subscriber.get_latest_data()
-        if state is None:
+        if self._latest_state is None:
             logger.error(f"No state data available for {self.__class__.__name__}")
-        return state
+        return self._latest_state
 
     def wait_for_active(self, timeout: float = 5.0) -> bool:
         """Waits for the component to start receiving state updates.
@@ -105,7 +121,12 @@ class RobotComponent:
         Returns:
             True if component becomes active, False if timeout is reached.
         """
-        return self._subscriber.wait_for_active(timeout)
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            if self._is_active:
+                return True
+            time.sleep(0.1)
+        return False
 
     def is_active(self) -> bool:
         """Check if component is receiving state updates.
@@ -113,7 +134,7 @@ class RobotComponent:
         Returns:
             True if component is active, False otherwise.
         """
-        return self._subscriber.is_active()
+        return self._is_active
 
     def shutdown(self) -> None:
         """Cleans up Zenoh resources."""
@@ -149,7 +170,7 @@ class RobotJointComponent(RobotComponent):
     Extends RobotComponent to add APIs for interacting with joints.
 
     Attributes:
-        _publisher: Zenoh publisher for control commands.
+        _publisher: Publisher for control commands (Zenoh or dexcomm).
         _joint_name: List of joint names for this component.
         _pose_pool: Dictionary of predefined poses for this component.
     """
@@ -178,7 +199,6 @@ class RobotJointComponent(RobotComponent):
         state_sub_topic: str,
         control_pub_topic: str,
         state_message_type: type[M],
-        zenoh_session: zenoh.Session,
         joint_name: list[str] | None = None,
         joint_limit: list[list[float]] | None = None,
         joint_vel_limit: list[float] | None = None,
@@ -190,16 +210,24 @@ class RobotJointComponent(RobotComponent):
             state_sub_topic: Topic to subscribe to for state updates.
             control_pub_topic: Topic to publish control commands.
             state_message_type: Protobuf message class for component state.
-            zenoh_session: Active Zenoh session for communication.
             joint_name: List of joint names for this component.
+            joint_limit: Joint position limits.
+            joint_vel_limit: Joint velocity limits.
             pose_pool: Dictionary of predefined poses for this component.
         """
-        super().__init__(state_sub_topic, zenoh_session, state_message_type)
+        super().__init__(state_sub_topic, state_message_type)
 
-        resolved_topic: Final[str] = resolve_key_name(control_pub_topic)
-        self._publisher: Final[zenoh.Publisher] = zenoh_session.declare_publisher(
-            resolved_topic
+        # Resolve topic with robot namespace
+        full_topic = resolve_key_name(control_pub_topic)
+
+        # Create DexComm publisher with protobuf serialization
+        self._publisher: Final[Publisher] = Publisher(
+            topic=full_topic,
+            serializer=serialize_protobuf,
+            config=get_zenoh_config_path(),
         )
+
+        logger.debug(f"Created publisher for {self.__class__.__name__} on {full_topic}")
         self._joint_name: list[str] | None = joint_name
         self._joint_limit: np.ndarray | None = (
             np.array(joint_limit) if joint_limit else None
@@ -218,22 +246,19 @@ class RobotJointComponent(RobotComponent):
         Args:
             control_msg: Protobuf control message to publish.
         """
-        msg_bytes = control_msg.SerializeToString()
-        self._publisher.put(msg_bytes)
+        # DexComm publisher with protobuf serializer handles this
+        self._publisher.publish(control_msg)
 
     def shutdown(self) -> None:
-        """Cleans up all Zenoh resources."""
+        """Cleans up all communication resources."""
         super().shutdown()
         try:
             if hasattr(self, "_publisher") and self._publisher:
-                self._publisher.undeclare()
+                self._publisher.shutdown()
         except Exception as e:
-            # Don't log "Undeclared publisher" errors as warnings - they're expected during shutdown
-            error_msg = str(e).lower()
-            if not ("undeclared" in error_msg or "closed" in error_msg):
-                logger.warning(
-                    f"Error undeclaring publisher for {self.__class__.__name__}: {e}"
-                )
+            logger.warning(
+                f"Error shutting down publisher for {self.__class__.__name__}: {e}"
+            )
 
     @property
     def joint_name(self) -> list[str]:

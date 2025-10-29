@@ -8,8 +8,7 @@
 # 2. Commercial License
 #    For commercial licensing terms, contact: contact@dexmate.ai
 
-from .luxonis_camera import LuxonisCameraConfig
 from .rgb_camera import RGBCameraConfig
 from .zed_camera import ZedCameraConfig
 
-__all__ = ["RGBCameraConfig", "ZedCameraConfig", "LuxonisCameraConfig"]
+__all__ = ["RGBCameraConfig", "ZedCameraConfig"]

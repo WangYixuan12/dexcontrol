@@ -12,11 +12,28 @@
 
 The script initializes the robot with all chassis cameras enabled, captures images
 from each camera continuously, and displays them in a single tiled window that updates live.
+
+Note: This example uses WebRTC (RTC) mode by default. To use standard Zenoh subscription,
+use the --no-use-rtc flag.
+
 Press Ctrl+C to exit the live feed.
 """
 
 import math
 import time
+
+# Set matplotlib backend before importing pyplot
+import matplotlib
+
+try:
+    # Try TkAgg backend first (more reliable for live display)
+    matplotlib.use("TkAgg")
+except ImportError:
+    try:
+        # Fallback to Qt5Agg
+        matplotlib.use("Qt5Agg")
+    except ImportError:
+        pass  # Use default
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -107,8 +124,13 @@ class LiveCameraDisplay:
         plt.close(self.fig)
 
 
-def main() -> None:
-    """Initializes the robot, retrieves chassis camera data, and displays it in real-time."""
+def main(use_rtc: bool = True, fps: float = 10.0) -> None:
+    """Initializes the robot, retrieves chassis camera data, and displays it in real-time.
+
+    Args:
+        use_rtc: If True, use WebRTC for camera streams (default: True)
+        fps: Display refresh rate in Hz (default: 10.0)
+    """
     configs = get_vega_config()
 
     # Define chassis cameras to be used in this example.
@@ -122,38 +144,69 @@ def main() -> None:
     # Enable all defined cameras in the configuration.
     for camera_name in camera_definitions:
         if hasattr(configs.sensors, camera_name):
-            getattr(configs.sensors, camera_name).enable = True
-            logger.info(f"Enabled '{camera_name}'.")
+            camera_config = getattr(configs.sensors, camera_name)
+            camera_config.enable = True
+            camera_config.use_rtc = use_rtc  # Set RTC mode
+            logger.info(f"Enabled '{camera_name}' (RTC: {use_rtc}).")
         else:
             logger.warning(f"Camera '{camera_name}' not found in configs.")
 
-    robot = Robot(configs=configs)
+    if use_rtc:
+        logger.info("Using WebRTC mode for camera streams.")
+    else:
+        logger.info("Using standard Zenoh subscription for camera streams.")
 
-    # Wait a moment for camera streams to stabilize.
-    logger.info("Waiting for camera streams to stabilize...")
-    time.sleep(3)
+    with Robot(configs=configs) as robot:
+        # Wait for cameras to become active
+        logger.info("Waiting for camera streams to become active...")
+        active_cameras = []
+        for camera_name in camera_definitions:
+            camera_sensor = getattr(robot.sensors, camera_name, None)
+            if camera_sensor:
+                if camera_sensor.wait_for_active(timeout=5.0):
+                    active_cameras.append(camera_name)
+                    logger.success(f"✓ {camera_definitions[camera_name]} is active")
+                    # Print camera info if available
+                    if (
+                        hasattr(camera_sensor, "camera_info")
+                        and camera_sensor.camera_info
+                    ):
+                        info = camera_sensor.camera_info
+                        logger.info(f"  Camera: {info.get('name', 'Unknown')}")
+                        if "rtc" in info and use_rtc:
+                            rtc_info = info["rtc"].get("streams", {}).get("rgb", {})
+                            if "signaling_url" in rtc_info:
+                                logger.info(f"  RTC URL: {rtc_info['signaling_url']}")
+                else:
+                    logger.warning(f"✗ {camera_definitions[camera_name]} is not active")
 
-    # Initialize live display
-    display = LiveCameraDisplay(camera_definitions)
+        if not active_cameras:
+            logger.error("No cameras are active. Exiting...")
+            return
 
-    logger.info("Starting live camera feed. Press Ctrl+C to exit...")
+        logger.info(f"Active cameras: {len(active_cameras)}/{len(camera_definitions)}")
 
-    try:
-        while True:
-            display.update_images(robot)
-            time.sleep(0.1)  # Update at ~10 FPS
+        # Initialize live display
+        display = LiveCameraDisplay(camera_definitions)
 
-    except KeyboardInterrupt:
-        logger.info("Keyboard interrupt received. Stopping live feed...")
+        logger.info(f"Starting live camera feed at {fps} FPS. Press Ctrl+C to exit...")
+        frame_delay = 1.0 / fps
 
-    except Exception as e:
-        logger.error(f"Unexpected error in live feed: {e}", exc_info=True)
+        try:
+            while True:
+                display.update_images(robot)
+                time.sleep(frame_delay)
 
-    finally:
-        logger.info("Shutting down...")
-        display.close()
-        robot.shutdown()
-        logger.info("Shutdown complete.")
+        except KeyboardInterrupt:
+            logger.info("Keyboard interrupt received. Stopping live feed...")
+
+        except Exception as e:
+            logger.error(f"Unexpected error in live feed: {e}", exc_info=True)
+
+        finally:
+            logger.info("Shutting down...")
+            display.close()
+            logger.info("Shutdown complete.")
 
 
 if __name__ == "__main__":

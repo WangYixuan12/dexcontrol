@@ -11,9 +11,8 @@
 """ZED IMU sensor implementation using Zenoh subscriber."""
 
 import numpy as np
-import zenoh
 
-from dexcontrol.utils.subscribers.imu import IMUSubscriber
+from dexcontrol.comm import create_imu_subscriber
 
 
 class ZedIMUSensor:
@@ -28,23 +27,17 @@ class ZedIMUSensor:
     def __init__(
         self,
         configs,
-        zenoh_session: zenoh.Session,
     ) -> None:
         """Initialize the ZED IMU sensor.
 
         Args:
             configs: Configuration object containing topic, name, and other settings.
-            zenoh_session: Active Zenoh session for communication.
         """
         self._name = configs.name
 
-        # Create the IMU subscriber
-        self._subscriber = IMUSubscriber(
+
+        self._subscriber = create_imu_subscriber(
             topic=configs.topic,
-            zenoh_session=zenoh_session,
-            name=f"{self._name}_subscriber",
-            enable_fps_tracking=configs.enable_fps_tracking,
-            fps_log_interval=configs.fps_log_interval,
         )
 
     def shutdown(self) -> None:
@@ -57,7 +50,8 @@ class ZedIMUSensor:
         Returns:
             True if receiving data, False otherwise.
         """
-        return self._subscriber.is_active()
+        data = self._subscriber.get_latest()
+        return data is not None
 
     def wait_for_active(self, timeout: float = 5.0) -> bool:
         """Wait for the ZED IMU sensor to start receiving data.
@@ -68,92 +62,109 @@ class ZedIMUSensor:
         Returns:
             True if sensor becomes active, False if timeout is reached.
         """
-        return self._subscriber.wait_for_active(timeout)
+        msg = self._subscriber.wait_for_message(timeout)
+        return msg is not None
 
     def get_obs(self, obs_keys: list[str] | None = None) -> dict[str, np.ndarray] | None:
         """Get observation data for the ZED IMU sensor.
 
         Args:
             obs_keys: List of observation keys to retrieve. If None, returns all available data.
-                     Valid keys: ['ang_vel', 'acc', 'quat', 'timestamp']
+                     Valid keys: ['ang_vel', 'acc', 'quat', 'mag', 'timestamp']
 
         Returns:
             Dictionary with observation data including all IMU measurements.
             Keys are mapped as follows:
-            - 'ang_vel': Angular velocity from 'angular_velocity'
-            - 'acc': Linear acceleration from 'acceleration'
-            - 'quat': Orientation quaternion from 'orientation'
+            - 'ang_vel': Angular velocity from 'gyro'
+            - 'acc': Linear acceleration from 'acc'
+            - 'quat': Orientation quaternion from 'quat'
+            - 'mag': Magnetometer from 'mag' (if available)
             - 'timestamp_ns': Timestamp from 'timestamp'
         """
         if obs_keys is None:
             obs_keys = ['ang_vel', 'acc', 'quat']
 
-        data = self._subscriber.get_latest_data()
+        data = self._subscriber.get_latest()
         if data is None:
             return None
 
-        obs_out = {'timestamp_ns': data['timestamp']}
+        obs_out = {}
+
+        # Add timestamp if available
+        if 'timestamp' in data:
+            obs_out['timestamp_ns'] = data['timestamp']
 
         for key in obs_keys:
             if key == 'ang_vel':
-                obs_out[key] = data['angular_velocity']
+                obs_out[key] = data.get('gyro', np.zeros(3))
             elif key == 'acc':
-                obs_out[key] = data['acceleration']
+                obs_out[key] = data.get('acc', np.zeros(3))
             elif key == 'quat':
-                obs_out[key] = data['orientation']
-            else:
-                raise ValueError(f"Invalid observation key: {key}")
+                obs_out[key] = data.get('quat', np.array([1.0, 0.0, 0.0, 0.0]))
+            elif key == 'mag' and 'mag' in data:
+                obs_out[key] = data['mag']
+            elif key == 'timestamp' and 'timestamp' in data:
+                obs_out['timestamp_ns'] = data['timestamp']
 
         return obs_out
 
-    def get_acceleration(self) -> np.ndarray | None:
+    def get_acc(self) -> np.ndarray | None:
         """Get the latest linear acceleration from ZED IMU.
 
         Returns:
             Linear acceleration [x, y, z] in m/s² if available, None otherwise.
         """
-        return self._subscriber.get_acceleration()
+        data = self._subscriber.get_latest()
+        return data.get('acc') if data else None
 
-    def get_angular_velocity(self) -> np.ndarray | None:
+    def get_gyro(self) -> np.ndarray | None:
         """Get the latest angular velocity from ZED IMU.
 
         Returns:
             Angular velocity [x, y, z] in rad/s if available, None otherwise.
         """
-        return self._subscriber.get_angular_velocity()
+        data = self._subscriber.get_latest()
+        return data.get('gyro') if data else None
 
-    def get_orientation(self) -> np.ndarray | None:
+    def get_quat(self) -> np.ndarray | None:
         """Get the latest orientation quaternion from ZED IMU.
 
         Returns:
-            Orientation quaternion [x, y, z, w] if available, None otherwise.
+            Orientation quaternion [w, x, y, z] if available, None otherwise.
+            Note: dexcomm uses [w, x, y, z] quaternion format.
         """
-        return self._subscriber.get_orientation()
+        data = self._subscriber.get_latest()
+        return data.get('quat') if data else None
 
-    def get_magnetometer(self) -> np.ndarray | None:
+    def get_mag(self) -> np.ndarray | None:
         """Get the latest magnetometer reading from ZED IMU.
 
         Returns:
             Magnetic field [x, y, z] in µT if available, None otherwise.
         """
-        return self._subscriber.get_magnetometer()
+        data = self._subscriber.get_latest()
+        if not data or not isinstance(data, dict):
+            return None
+        return data.get('mag', None)
 
-    def has_magnetometer(self) -> bool:
+    def has_mag(self) -> bool:
         """Check if the ZED IMU has magnetometer data available.
 
         Returns:
             True if magnetometer data is available, False otherwise.
         """
-        return self._subscriber.has_magnetometer()
+        data = self._subscriber.get_latest()
+        if not data or not isinstance(data, dict):
+            return False
+        return 'mag' in data and data['mag'] is not None
 
-    @property
-    def fps(self) -> float:
-        """Get the current FPS measurement.
 
-        Returns:
-            Current frames per second measurement.
-        """
-        return self._subscriber.fps
+    # Backward compatibility aliases
+    get_acceleration = get_acc
+    get_angular_velocity = get_gyro
+    get_orientation = get_quat
+    get_magnetometer = get_mag
+    has_magnetometer = has_mag
 
     @property
     def name(self) -> str:
