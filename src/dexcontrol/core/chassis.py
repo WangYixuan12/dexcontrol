@@ -675,37 +675,34 @@ class Chassis:
             -wheel_speed,
         )
 
-        # Choose the steering solution, avoiding one the steer stop would clamp FAR off
-        # the commanded heading.
+        # Choose the steering solution, preferring one that is physically REACHABLE.
         #
-        # The two solutions are pi apart and the reachable steer arc (2 * _max_steering_
-        # angle) is wider than pi, so at least one is always within the stop. The old
-        # "nearest then clamp" rule picked the near-but-out-of-range branch when the
-        # steering had wound up near +/-pi and clamped it -- pointing the wheel up to ~45
-        # deg off the commanded velocity, so "drive straight" drove the base diagonally.
-        # We measure each branch's clamp distortion (how far the stop pulls it off the
-        # commanded heading) and take the reachable branch when the other clamps far off
-        # (gap > clamp_distortion_tol). A MARGINAL clamp (a hair past the stop -- e.g. the
-        # ~0.10 rad yaw wheel or a near-limit strafe) is left to the nearest-branch pick,
-        # so a fraction-of-a-degree clamp never triggers a ~pi steer slew. The 0.35 rad
-        # cutoff sits in the empty gap between the ~0.10 rad yaw clamp and the ~0.79 rad
-        # diagonal (single-axis chassis commands produce no distortion between the two).
-        limit = self._max_steering_angle
-        clamp_distortion_tol = 0.35
-        sol1_distortion = abs(sol1[0] - float(np.clip(sol1[0], -limit, limit)))
-        sol2_distortion = abs(sol2[0] - float(np.clip(sol2[0], -limit, limit)))
-        if sol1_distortion + clamp_distortion_tol < sol2_distortion:
-            steering_angle, wheel_speed = sol1  # sol2 clamps far off-heading; sol1 reachable
-        elif sol2_distortion + clamp_distortion_tol < sol1_distortion:
+        # The two solutions are pi apart and the reachable steering arc spans
+        # 2 * _max_steering_angle (> pi), so at least one solution is always within the
+        # limit. Previously the code picked the solution nearest the current angle and
+        # THEN clamped it; when the steering had wound up near +/-pi, "drive straight"
+        # picked the near-but-out-of-range branch, clamping steered the wheel up to ~45
+        # deg off the commanded velocity, and the base drove diagonally instead of
+        # forward. Choosing the in-range branch realizes the commanded direction exactly.
+        # When both solutions are reachable we keep the original nearest-to-current pick
+        # (smallest steer slew), so behavior is unchanged except in the clamp case.
+        sol1_reachable = abs(sol1[0]) <= self._max_steering_angle
+        sol2_reachable = abs(sol2[0]) <= self._max_steering_angle
+        if sol1_reachable and not sol2_reachable:
+            steering_angle, wheel_speed = sol1
+        elif sol2_reachable and not sol1_reachable:
             steering_angle, wheel_speed = sol2
         else:
-            # Comparable clamp distortion: original nearest-to-current pick.
+            # Both reachable (or, degenerately, neither): original nearest-branch pick.
             angle1_diff = abs(sol1[0] - current_angle)
             angle2_diff = abs(sol2[0] - current_angle)
             steering_angle, wheel_speed = sol1 if angle1_diff < angle2_diff else sol2
 
-        # Ensure steering angle is within bounds (clamp the winner).
-        steering_angle = float(np.clip(steering_angle, -limit, limit))
+        # Ensure steering angle is within bounds. A reachable pick is already within the
+        # limit; this only bites in the degenerate no-reachable-branch case.
+        steering_angle = float(
+            np.clip(steering_angle, -self._max_steering_angle, self._max_steering_angle)
+        )
 
         return steering_angle, wheel_speed
 
